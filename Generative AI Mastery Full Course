@@ -1,1 +1,2666 @@
+DS with Bappy
+
+# GenAI Video — 3-Part Study Pack
+
+These notes are based on **three consecutive transcript texts from the same video** that were provided in sequence.
+
+## Files
+
+### 1. `01_genai_foundations_and_data.md`
+
+Covers:
+
+- Generative AI basics
+- Why GenAI is useful
+- LLM introduction
+- Structured vs unstructured data
+- Data preprocessing
+- Corpus and vocabulary
+- Classical NLP preprocessing
+- Bag of Words
+- TF-IDF
+- Embeddings
+- Numerical representation of images/audio
+
+### 2. `02_llm_huggingface_prompt_vector_db_finetuning.md`
+
+Covers:
+
+- LLMs
+- Commercial vs open models
+- Hugging Face
+- Transformers
+- Tokenization
+- Attention masks
+- Dataset preparation
+- Fine-tuning
+- RAG vs fine-tuning
+- Prompt engineering
+- Linguistics
+- Prompt templates
+- Chains
+- Agents and tools
+- Memory
+- Vector databases
+- Similarity search
+- Top-K retrieval
+
+### 3. `03_langchain_rag_document_loading_and_application.md`
+
+Covers:
+
+- LangChain
+- Chains vs agents
+- Tools
+- Memory
+- Document loaders
+- PDF loading
+- Document abstraction
+- Parsing
+- Chunking
+- Chunk overlap
+- Embeddings
+- Vector stores
+- Similarity search
+- RAG
+- Hallucination
+- Basic RAG architecture
+- Production-RAG direction
+
+---
+
+# Recommended Study Order
+
+```text
+01 Foundations
+       ↓
+02 LLM + Prompt + Vector DB + Fine-tuning
+       ↓
+03 LangChain + RAG
+```
+
+Do not try to memorize the code shown in the video first.
+
+First understand the architecture:
+
+```text
+Data
+ ↓
+Representation
+ ↓
+Model
+ ↓
+Prompt
+ ↓
+Retrieval / Tools
+ ↓
+LLM
+ ↓
+Application
+```
+
+Then implement the examples.
+
+---
+
+# Minimum checkpoint before moving ahead
+
+You should be able to draw and explain:
+
+```text
+Documents
+ ↓
+Load
+ ↓
+Parse
+ ↓
+Chunk
+ ↓
+Embed
+ ↓
+Vector DB
+ ↓
+Retrieve
+ ↓
+Prompt + Context
+ ↓
+LLM
+ ↓
+Answer
+```
+
+And you should understand the difference between:
+
+```text
+Prompt Engineering
+= improve instructions
+
+RAG
+= provide external knowledge
+
+Fine-tuning
+= adapt model behavior
+
+Memory
+= provide conversation/application context
+
+Tools
+= give the model/application external capabilities
+```
+
+These distinctions are more important than memorizing framework APIs.
+
+
+# GenAI Video Study Notes — Part 1
+## Foundations, Generative AI, Data, Preprocessing, Embeddings and LLM Introduction
+
+> These notes consolidate the **first of the three consecutive transcript sections** you provided from the same video.
+> They are written as study notes rather than a transcript, with emphasis on concepts you should understand before moving to the later parts.
+
+---
+
+## 1. Course Direction
+
+The video is designed as a progression from:
+
+```text
+Generative AI Basics
+        ↓
+Data Preprocessing
+        ↓
+Embeddings
+        ↓
+Large Language Models
+        ↓
+Prompt Engineering
+        ↓
+Vector Databases
+        ↓
+RAG
+        ↓
+Frameworks
+        ↓
+Fine-Tuning
+        ↓
+Projects / Deployment
+        ↓
+LLMOps
+```
+
+The instructor emphasizes both theory and hands-on implementation.
+
+### Important study principle
+
+Do not treat the course as a list of libraries to memorize.
+
+The important chain is:
+
+```text
+Data
+ ↓
+Representation
+ ↓
+Model
+ ↓
+Prompt / Application Logic
+ ↓
+Retrieval / Tools
+ ↓
+Application
+```
+
+---
+
+# 2. What Is Generative AI?
+
+Generative AI refers to models that can generate new content based on learned patterns.
+
+Examples include:
+
+- Text generation
+- Code generation
+- Image generation
+- Audio generation
+- Video generation
+- Summarization
+- Translation
+- Question answering
+
+Examples discussed in the video include ChatGPT, Gemini and Llama-based systems.
+
+### Traditional ML vs Generative AI
+
+Traditional ML is often built around a specific prediction task:
+
+```text
+Input → Model → Prediction
+```
+
+Generative AI is designed to produce content:
+
+```text
+Prompt / Input → Generative Model → Generated Output
+```
+
+A key idea:
+
+> Generative models learn patterns from large amounts of data and use those learned patterns to generate new outputs.
+
+---
+
+# 3. Why Generative AI Became Important
+
+The video highlights three broad reasons.
+
+## 3.1 Handling complex patterns in unstructured data
+
+Modern applications generate enormous quantities of:
+
+- Text
+- Images
+- Audio
+- Video
+- Documents
+
+This information is not naturally represented as simple rows and columns.
+
+Generative models and modern deep-learning architectures can learn useful patterns from this type of data.
+
+---
+
+## 3.2 Content Generation
+
+A generative model can produce:
+
+- Articles
+- Stories
+- Code
+- Music
+- Images
+- Videos
+- Summaries
+
+Example:
+
+```text
+Topic
+ ↓
+Prompt
+ ↓
+LLM
+ ↓
+Draft article
+```
+
+The generated content can then be reviewed and edited.
+
+---
+
+## 3.3 Building Powerful Applications
+
+Generative models became useful application components.
+
+Examples:
+
+```text
+Chatbot
+Code assistant
+Document assistant
+Summarization system
+Translation system
+Research assistant
+```
+
+The important shift is:
+
+> The LLM is not necessarily the entire application. It is a powerful component inside an application.
+
+---
+
+# 4. Multimodal Generative AI
+
+The video introduces the idea that generative systems are not limited to text.
+
+Examples:
+
+```text
+Text → Text
+Text → Image
+Image → Text
+Text → Audio
+Audio → Text
+Text → Video
+```
+
+This is commonly described as **multimodal AI** when one system can work across multiple modalities.
+
+### Important distinction
+
+A language model is primarily designed around language, while modern multimodal models can additionally process other forms of information.
+
+---
+
+# 5. What Makes LLMs Powerful?
+
+A traditional NLP application might require a specialized model for:
+
+```text
+Translation
+Summarization
+Classification
+NER
+Sentiment Analysis
+```
+
+An LLM can often perform many of these tasks through prompting:
+
+```text
+              ┌─ Translation
+              ├─ Summarization
+Prompt → LLM ├─ Classification
+              ├─ Question Answering
+              ├─ Code Generation
+              └─ Content Generation
+```
+
+This general-purpose behavior is one of the major reasons LLMs are so useful.
+
+---
+
+# 6. LLM as a Next-Token Prediction System
+
+At the core, an autoregressive language model repeatedly predicts what token should come next.
+
+Conceptually:
+
+```text
+Input:
+"The capital of India is"
+
+        ↓
+
+Model predicts probabilities
+
+        ↓
+
+"Delhi"
+
+        ↓
+
+"The capital of India is Delhi"
+```
+
+Then the generated sequence can be used to predict the next token again.
+
+So:
+
+```text
+Token → Token → Token → Token → ...
+```
+
+This simple mechanism becomes powerful because the model has learned patterns from enormous training datasets.
+
+---
+
+# 7. Data: Structured vs Unstructured
+
+## Structured Data
+
+Examples:
+
+```text
+ID | Name | Age | Salary
+```
+
+Easy to represent using tables.
+
+## Unstructured Data
+
+Examples:
+
+- PDFs
+- Emails
+- Documents
+- Audio
+- Images
+- Videos
+- Web pages
+
+GenAI applications frequently operate on unstructured data.
+
+This is especially important for RAG because enterprise knowledge is usually stored in documents rather than clean database rows.
+
+---
+
+# 8. Data Preprocessing
+
+Before data is given to a model, it often needs cleaning and preparation.
+
+The video uses an IMDb movie-review dataset as a practical example.
+
+Typical preprocessing operations include:
+
+- Removing unnecessary text
+- Cleaning HTML-like artifacts
+- Normalizing text
+- Handling missing values
+- Removing unwanted characters
+- Tokenization
+- Preparing features
+
+The general pipeline is:
+
+```text
+Raw Data
+   ↓
+Cleaning
+   ↓
+Normalization
+   ↓
+Preprocessing
+   ↓
+Representation
+   ↓
+Model
+```
+
+---
+
+# 9. Corpus and Vocabulary
+
+These terms are important.
+
+## Corpus
+
+A corpus is the collection of text being processed.
+
+```text
+Document 1
+Document 2
+Document 3
+...
+        ↓
+     Corpus
+```
+
+## Vocabulary
+
+Vocabulary is the set of unique tokens/words used by the tokenizer or text-processing system.
+
+Example:
+
+```text
+Text:
+"I like AI. AI is useful."
+
+Unique words:
+I
+like
+AI
+is
+useful
+```
+
+The exact vocabulary depends on the tokenization method.
+
+---
+
+# 10. Classical Text Preprocessing
+
+The video introduces traditional NLP preprocessing concepts.
+
+### Lowercasing
+
+```text
+"Hello WORLD"
+        ↓
+"hello world"
+```
+
+### Stop words
+
+Words such as:
+
+```text
+the
+is
+a
+an
+of
+```
+
+may be removed in some classical NLP pipelines.
+
+### Stemming
+
+Reduces words toward a root form.
+
+```text
+playing
+played
+plays
+```
+
+may become:
+
+```text
+play
+```
+
+### Lemmatization
+
+Attempts to return a linguistically meaningful base form.
+
+```text
+running → run
+better → good
+```
+
+### Important modern-LLM note
+
+Do not blindly apply all classical preprocessing to modern LLM pipelines.
+
+Modern tokenizers generally expect natural text and preserve information that classical NLP pipelines sometimes remove.
+
+---
+
+# 11. From Text to Numbers
+
+A model cannot directly operate on human-readable text.
+
+A representation is required.
+
+Historical progression:
+
+```text
+Text
+ ↓
+Bag of Words
+ ↓
+TF-IDF
+ ↓
+Dense Embeddings
+```
+
+---
+
+# 12. Bag of Words
+
+Bag of Words represents text using word occurrence/count information.
+
+Example:
+
+```text
+"I love AI"
+"AI is useful"
+```
+
+Vocabulary:
+
+```text
+I
+love
+AI
+is
+useful
+```
+
+Each sentence becomes a numerical vector indicating which vocabulary items occur.
+
+### Limitation
+
+Bag of Words mostly captures occurrence, not semantic meaning.
+
+---
+
+# 13. TF-IDF
+
+TF-IDF improves upon simple word counts.
+
+It considers:
+
+```text
+TF = Term Frequency
+IDF = Inverse Document Frequency
+```
+
+The general intuition:
+
+- A word appearing often in one document is important to that document.
+- A word appearing in almost every document is less useful for distinguishing documents.
+
+TF-IDF is important historically and conceptually, but modern GenAI systems rely much more heavily on learned embeddings.
+
+---
+
+# 14. Embeddings
+
+This is one of the most important concepts in the entire course.
+
+An embedding converts information into a dense numerical vector.
+
+Conceptually:
+
+```text
+"dog"
+   ↓
+Embedding model
+   ↓
+[0.12, -0.42, 0.91, ...]
+```
+
+Semantically related items tend to have nearby representations.
+
+```text
+dog
+puppy
+canine
+```
+
+should generally be closer in embedding space than unrelated concepts.
+
+---
+
+# 15. Why Embeddings Matter
+
+Embeddings are the bridge between human information and vector-based retrieval.
+
+They enable:
+
+- Semantic search
+- Similarity search
+- Recommendation systems
+- Clustering
+- RAG
+- Long-term knowledge retrieval
+
+Basic RAG ingestion:
+
+```text
+Document
+ ↓
+Chunks
+ ↓
+Embedding model
+ ↓
+Vectors
+ ↓
+Vector database
+```
+
+---
+
+# 16. Images and Audio as Numerical Data
+
+The video also explains that non-text information can be represented numerically.
+
+## Image
+
+An image is fundamentally represented through pixel values.
+
+For a grayscale 28 × 28 image:
+
+```text
+28 × 28 = 784 pixels
+```
+
+These pixel values can be flattened into a vector.
+
+```text
+Image
+ ↓
+Pixels
+ ↓
+Numbers
+ ↓
+Model
+```
+
+For color images, there are multiple channels such as RGB.
+
+---
+
+## Audio
+
+Audio can also be represented numerically as a signal.
+
+Conceptually:
+
+```text
+Sound
+ ↓
+Waveform / Signal
+ ↓
+Samples
+ ↓
+Numbers
+ ↓
+Model
+```
+
+Modern audio systems can then transform these representations into useful learned embeddings.
+
+---
+
+# 17. Core Mental Model Before LLMs
+
+Before moving deeper into LLMs, understand:
+
+```text
+REAL-WORLD DATA
+      ↓
+Numerical Representation
+      ↓
+Machine Learning / Deep Learning
+      ↓
+Learned Patterns
+      ↓
+Prediction / Generation
+```
+
+For modern GenAI:
+
+```text
+Text
+ ↓
+Tokens
+ ↓
+Token IDs
+ ↓
+Embeddings
+ ↓
+Transformer
+ ↓
+Generated tokens
+```
+
+---
+
+# 18. What You Should Study From Part 1
+
+### Must understand deeply
+
+- What Generative AI means
+- Difference between traditional ML and GenAI
+- Structured vs unstructured data
+- What an LLM does
+- Tokens and token IDs
+- Corpus and vocabulary
+- Why data preprocessing exists
+- What embeddings are
+- Why embeddings are needed for semantic search
+- How text/images/audio become numerical representations
+
+### Understand conceptually
+
+- Stemming
+- Lemmatization
+- Stop words
+- Bag of Words
+- TF-IDF
+
+### Do not over-invest in
+
+Classical NLP preprocessing. It is useful background, but modern GenAI engineering is much more dependent on tokenization, embeddings, transformers, retrieval and model behavior.
+
+
+# GenAI Video Study Notes — Part 2
+## LLMs, Hugging Face, Fine-Tuning, Prompt Engineering and Vector Databases
+
+> These notes cover the **second consecutive transcript section** from the same video.
+> Focus on understanding the architecture and decision-making rather than memorizing library syntax.
+
+---
+
+# 1. Large Language Models
+
+An LLM is a large neural network trained on huge quantities of text and other training data.
+
+The important conceptual pipeline is:
+
+```text
+Text
+ ↓
+Tokenizer
+ ↓
+Token IDs
+ ↓
+Embeddings
+ ↓
+Transformer
+ ↓
+Logits
+ ↓
+Next-token probabilities
+ ↓
+Generated token
+```
+
+The model repeats this generation process autoregressively.
+
+---
+
+# 2. Commercial vs Open-Source Models
+
+The video introduces multiple model ecosystems.
+
+Conceptually divide them into:
+
+## Hosted / Commercial Models
+
+The model runs on the provider's infrastructure.
+
+Your application sends a request:
+
+```text
+Application
+   ↓
+API
+   ↓
+Hosted LLM
+   ↓
+Response
+```
+
+Advantages:
+
+- No need to host GPUs
+- Easy to start
+- Provider manages infrastructure
+
+Trade-offs:
+
+- API cost
+- Provider dependency
+- Data/privacy considerations
+- Network latency
+
+## Open Models
+
+Models can often be downloaded and run using your own infrastructure.
+
+```text
+Application
+ ↓
+Local / Cloud GPU
+ ↓
+Open model
+```
+
+Advantages:
+
+- More control
+- Potentially better privacy
+- Custom deployment
+
+Trade-offs:
+
+- GPU cost
+- Deployment complexity
+- Model optimization
+- Monitoring and scaling
+
+---
+
+# 3. Hugging Face
+
+The video introduces Hugging Face as a major ecosystem for:
+
+- Models
+- Tokenizers
+- Datasets
+- Transformers
+- Inference
+- Fine-tuning
+- Spaces
+
+The important abstraction is:
+
+```text
+Model
++
+Tokenizer
++
+Dataset
++
+Pipeline
+=
+ML / GenAI application
+```
+
+---
+
+# 4. Transformers Library
+
+The Hugging Face `transformers` ecosystem provides implementations and utilities for many transformer-based models.
+
+Typical workflow:
+
+```text
+Load tokenizer
+      ↓
+Load model
+      ↓
+Prepare input
+      ↓
+Run inference
+      ↓
+Decode output
+```
+
+The video also introduces task-specific pipelines.
+
+Examples:
+
+```text
+Text generation
+Summarization
+Translation
+Classification
+Question answering
+```
+
+### Important distinction
+
+"Transformer" can refer to:
+
+1. The neural-network architecture.
+2. Hugging Face's `transformers` software library.
+
+Do not confuse the two.
+
+---
+
+# 5. Tokenization in Hugging Face
+
+Tokenization converts text into model-compatible token IDs.
+
+Conceptually:
+
+```text
+"Hello world"
+      ↓
+Tokenizer
+      ↓
+[15496, 995]
+```
+
+The exact IDs depend on the tokenizer/model.
+
+The tokenizer may produce:
+
+- `input_ids`
+- `attention_mask`
+- Other model-specific fields
+
+---
+
+# 6. Attention Mask
+
+An attention mask tells the model which positions should be considered valid.
+
+For padded sequences, it may look like:
+
+```text
+[1, 1, 1, 1, 0, 0]
+```
+
+where:
+
+```text
+1 = valid token
+0 = padding / ignored position
+```
+
+The exact behavior depends on the model and task, but the key idea is:
+
+> The model needs to know which token positions contain meaningful input.
+
+---
+
+# 7. Dataset Preparation
+
+For supervised tasks, a dataset often contains:
+
+```text
+Input
+Target
+```
+
+For example, summarization:
+
+```text
+Dialogue → Summary
+```
+
+The preprocessing stage can tokenize both.
+
+Conceptually:
+
+```text
+Dialogue
+   ↓
+Input IDs
+
+Summary
+   ↓
+Labels
+```
+
+The model learns to generate the summary based on the input.
+
+---
+
+# 8. Fine-Tuning
+
+Fine-tuning means adapting a pretrained model to a particular task/domain using additional training data.
+
+Important distinction:
+
+```text
+Pretraining
+=
+Learn broad language patterns
+
+Fine-tuning
+=
+Adapt an existing model to a specific objective
+```
+
+Example:
+
+```text
+Pretrained model
+       ↓
+Customer-support dataset
+       ↓
+Fine-tuning
+       ↓
+Customer-support specialized behavior
+```
+
+---
+
+# 9. Fine-Tuning Example From the Video
+
+The video demonstrates a summarization dataset containing conversations and their summaries.
+
+Conceptually:
+
+```text
+Conversation
+     ↓
+Tokenizer
+     ↓
+Input IDs
+
+Summary
+     ↓
+Tokenizer
+     ↓
+Labels
+```
+
+The training process teaches the model:
+
+```text
+Conversation → Summary
+```
+
+This is a sequence-to-sequence style task.
+
+---
+
+# 10. Training / Validation / Test
+
+A dataset is normally split into:
+
+```text
+Training
+Validation
+Testing
+```
+
+### Training
+
+Used to update model parameters.
+
+### Validation
+
+Used during development to evaluate/generalize and tune decisions.
+
+### Test
+
+Used for final evaluation.
+
+Never evaluate only on the training data.
+
+---
+
+# 11. Research-Paper Summarization Example
+
+The video also demonstrates using a pretrained summarization model on research-paper abstracts.
+
+Conceptually:
+
+```text
+Research papers
+      ↓
+Extract abstract
+      ↓
+Pretrained summarization model
+      ↓
+Summary
+```
+
+This demonstrates an important idea:
+
+> You can often use a pretrained model directly before considering fine-tuning.
+
+---
+
+# 12. Fine-Tuning vs RAG
+
+This distinction is extremely important.
+
+## Use RAG when:
+
+The problem is primarily:
+
+> "The model needs access to external/current/private information."
+
+Example:
+
+```text
+Company policies
+Internal documents
+Product manuals
+Current knowledge
+```
+
+Pipeline:
+
+```text
+Documents
+ ↓
+Embeddings
+ ↓
+Vector DB
+ ↓
+Retrieval
+ ↓
+LLM
+```
+
+## Use Fine-Tuning when:
+
+The problem is primarily:
+
+> "I want to change/adapt the model's behavior, style or task performance."
+
+Examples:
+
+- Domain-specific output format
+- Consistent style
+- Specialized task
+- Behavioral adaptation
+
+### Simplified decision rule
+
+```text
+Need knowledge?
+     ↓
+    RAG
+
+Need behavior adaptation?
+     ↓
+ Fine-tuning
+```
+
+In real systems, both can sometimes be used together.
+
+---
+
+# 13. Cost of Fine-Tuning
+
+The video emphasizes that fine-tuning can require substantial:
+
+- Compute
+- Training data
+- Infrastructure
+- Engineering effort
+
+Therefore:
+
+> Do not fine-tune simply because you have custom data.
+
+First ask whether RAG solves the problem.
+
+---
+
+# 14. Prompt Engineering
+
+A prompt is the input/instruction given to the model.
+
+Prompt engineering is the practice of designing that input so the model produces the desired result.
+
+Example:
+
+```text
+Bad:
+"Tell me about this."
+
+Better:
+"Summarize the following document in 5 bullet points,
+focusing only on technical decisions."
+```
+
+A good prompt controls:
+
+- Task
+- Context
+- Constraints
+- Output format
+- Tone
+- Examples
+- Evaluation criteria
+
+---
+
+# 15. Why Prompt Engineering Matters
+
+The same model can produce very different results depending on how the task is specified.
+
+Conceptually:
+
+```text
+Same LLM
+   +
+Prompt A → Output A
+
+Same LLM
+   +
+Prompt B → Output B
+```
+
+Therefore the application developer must design the interface between user/application and model carefully.
+
+---
+
+# 16. Linguistics and Prompt Engineering
+
+The video connects prompt engineering to language structure.
+
+Terms introduced include:
+
+### Phonetics
+Study of speech sounds.
+
+### Phonology
+Study of sound patterns.
+
+### Morphology
+Study of word structure.
+
+### Syntax
+Study of sentence structure.
+
+### Semantics
+Study of meaning.
+
+### Pragmatics
+Meaning in context/use.
+
+You do not need to become a linguist.
+
+The practical takeaway is:
+
+> Better understanding of language structure can help you reason about how instructions and context affect model output.
+
+---
+
+# 17. Prompt Templates
+
+A prompt template lets you keep a reusable prompt while changing variables.
+
+Example:
+
+```text
+You are a helpful assistant.
+
+Generate a company name for:
+{product}
+```
+
+Then:
+
+```text
+product = colorful socks
+```
+
+becomes:
+
+```text
+You are a helpful assistant.
+
+Generate a company name for:
+colorful socks
+```
+
+This is much cleaner than manually rebuilding the prompt each time.
+
+---
+
+# 18. LangChain Chains
+
+A chain connects multiple operations into a workflow.
+
+Conceptually:
+
+```text
+Prompt Template
+      ↓
+     LLM
+      ↓
+   Output
+```
+
+A larger chain can be:
+
+```text
+Input
+ ↓
+Prompt
+ ↓
+LLM
+ ↓
+Parser
+ ↓
+Next step
+ ↓
+LLM
+```
+
+The key concept:
+
+> A chain is a sequence of connected operations.
+
+---
+
+# 19. Agents and Tools
+
+Agents go beyond fixed chains.
+
+A chain follows a predefined path:
+
+```text
+A → B → C
+```
+
+An agent can choose what action/tool to use based on the task.
+
+Conceptually:
+
+```text
+User Question
+      ↓
+     Agent
+      ↓
+Choose Tool
+   ↙   ↓   ↘
+Search DB API Calculator
+   ↘   ↓   ↙
+    Result
+      ↓
+     LLM
+      ↓
+    Answer
+```
+
+This is useful when the answer requires external information or actions.
+
+---
+
+# 20. Tools
+
+A tool is an external capability available to the model/application.
+
+Examples:
+
+- Search API
+- Wikipedia
+- Weather API
+- Database
+- Calculator
+- Internal company API
+
+The LLM itself does not magically know live information.
+
+A tool lets the application obtain that information.
+
+---
+
+# 21. Why Agents Help With Current Information
+
+An LLM's pretrained knowledge is not necessarily current.
+
+For a question requiring live information:
+
+```text
+User
+ ↓
+LLM
+ ↓
+"Need external information"
+ ↓
+Search/API tool
+ ↓
+Current result
+ ↓
+LLM
+ ↓
+Answer
+```
+
+This is the conceptual foundation of tool-using agents.
+
+---
+
+# 22. Memory
+
+A normal stateless LLM request does not automatically have persistent conversation memory.
+
+An application can provide previous messages as context.
+
+Example:
+
+```text
+Conversation:
+User: My name is Jitesh.
+Assistant: Nice to meet you.
+
+User: What is my name?
+```
+
+If the application sends the relevant previous context, the model can answer.
+
+LangChain provides memory abstractions to help manage this.
+
+### Important distinction
+
+```text
+LLM
+≠
+Memory
+```
+
+Memory is an application-level mechanism for storing/retrieving context.
+
+---
+
+# 23. Vector Databases
+
+A vector database stores embeddings and supports similarity search.
+
+Basic flow:
+
+```text
+Document
+ ↓
+Embedding
+ ↓
+Vector
+ ↓
+Vector DB
+```
+
+At query time:
+
+```text
+Question
+ ↓
+Query Embedding
+ ↓
+Vector Search
+ ↓
+Top-K similar vectors
+```
+
+---
+
+# 24. Why Not Use a Normal Database?
+
+Traditional databases are excellent at structured queries:
+
+```text
+WHERE id = 123
+WHERE status = 'active'
+```
+
+Vector databases are optimized for questions such as:
+
+> "Find documents that are semantically similar to this question."
+
+This is why they are useful for RAG.
+
+---
+
+# 25. Similarity Search
+
+A query is converted to an embedding.
+
+Stored documents already have embeddings.
+
+Then a similarity metric is used.
+
+Common concepts include:
+
+- Cosine similarity
+- Dot product
+- Euclidean distance
+
+The exact metric depends on the embedding model and vector database configuration.
+
+---
+
+# 26. K in Top-K Retrieval
+
+If:
+
+```text
+K = 3
+```
+
+the system returns the top three most similar results.
+
+```text
+Query
+ ↓
+Vector search
+ ↓
+Result 1
+Result 2
+Result 3
+```
+
+K is a retrieval parameter, not the number of total documents in the database.
+
+---
+
+# 27. Vector Database Use Cases
+
+The video discusses:
+
+- Semantic search
+- Similarity search
+- Recommendation systems
+- Long-term knowledge/memory for LLM applications
+- RAG
+
+The deeper idea is:
+
+> A vector database gives an application a searchable external semantic memory.
+
+---
+
+# 28. Key Takeaways From Part 2
+
+You should be able to explain:
+
+1. What an LLM is.
+2. What tokenization does.
+3. What Hugging Face provides.
+4. What a Transformer library is.
+5. What fine-tuning means.
+6. RAG vs fine-tuning.
+7. What prompt engineering is.
+8. Why prompt templates exist.
+9. Chain vs agent.
+10. What a tool is.
+11. Why agents need tools.
+12. What application memory means.
+13. What a vector database stores.
+14. What similarity search does.
+15. What Top-K means.
+
+---
+
+# 29. The Core Architecture So Far
+
+```text
+                 USER
+                  ↓
+                PROMPT
+                  ↓
+           Prompt Template
+                  ↓
+                 LLM
+            ↙     ↓      ↘
+        Memory   Tools    RAG
+                   │       │
+                 APIs    Vector DB
+                           │
+                       Embeddings
+                           │
+                       Documents
+```
+
+This architecture leads directly into the third part of the video.
+
+
+# GenAI Video Study Notes — Part 3
+## LangChain, Document Loading, Chunking, Embeddings, Retrieval, RAG and Application Building
+
+> These notes cover the **third consecutive transcript section** from the same video.
+> This is the section where the course starts turning the earlier concepts into practical GenAI applications.
+
+---
+
+# 1. Why LangChain Appears Here
+
+The course introduces LangChain as an application-development framework.
+
+The important conceptual point is:
+
+> LangChain does not replace the LLM. It helps connect the LLM with prompts, documents, retrievers, tools, memory and application workflows.
+
+Think:
+
+```text
+                 LANGCHAIN
+                     │
+       ┌─────────────┼─────────────┐
+       ↓             ↓             ↓
+     Prompt         LLM          Tools
+       ↓             ↓             ↓
+   Templates      Models        APIs
+       │
+       ├── Chains
+       ├── Memory
+       ├── Retrievers
+       ├── Document Loaders
+       └── RAG components
+```
+
+---
+
+# 2. LangChain Chains
+
+A chain connects multiple operations.
+
+Example:
+
+```text
+User Input
+   ↓
+Prompt Template
+   ↓
+LLM
+   ↓
+Output
+```
+
+More complex:
+
+```text
+Input
+ ↓
+Prompt
+ ↓
+LLM
+ ↓
+Parser
+ ↓
+Second Prompt
+ ↓
+Second LLM
+ ↓
+Final Answer
+```
+
+This is a fixed workflow.
+
+---
+
+# 3. Chain vs Agent
+
+## Chain
+
+The developer defines the sequence.
+
+```text
+A → B → C → D
+```
+
+Predictable.
+
+## Agent
+
+The model/application can decide which tool/action to take.
+
+```text
+Question
+ ↓
+Agent
+ ├── Search
+ ├── Database
+ ├── API
+ └── Calculator
+```
+
+More dynamic.
+
+### Mental model
+
+```text
+Chain = predefined workflow
+
+Agent = decision-making workflow
+```
+
+---
+
+# 4. Agents and Tools
+
+The video demonstrates the idea of connecting external tools.
+
+Example:
+
+```text
+User:
+"What is the latest information about X?"
+
+        ↓
+
+Agent
+        ↓
+Search API
+        ↓
+Current information
+        ↓
+LLM
+        ↓
+Answer
+```
+
+Other tools can include:
+
+- Wikipedia
+- Search engines
+- Weather APIs
+- Third-party APIs
+- Internal business APIs
+
+---
+
+# 5. Application Memory
+
+Memory allows an application to retain relevant previous conversation context.
+
+Example:
+
+```text
+User:
+"The winning team was India."
+
+Assistant:
+"Okay."
+
+User:
+"Who was its captain?"
+```
+
+The application needs previous context to resolve "its".
+
+A memory mechanism can provide previous conversation history.
+
+---
+
+# 6. Memory Is Not the Same as Model Training
+
+This is important.
+
+```text
+Conversation Memory
+=
+Application context
+
+Fine-tuning
+=
+Changing model parameters
+
+Pretraining
+=
+Learning broad patterns
+```
+
+Do not confuse these three.
+
+---
+
+# 7. Document Loaders
+
+The next major topic is document loading.
+
+A RAG application needs to get information from external sources.
+
+Examples:
+
+- PDF
+- TXT
+- CSV
+- JSON
+- HTML
+- Markdown
+- Word documents
+- Websites
+- Slack
+- Discord
+- Other data sources
+
+LangChain provides document-loader abstractions for many of these sources.
+
+---
+
+# 8. Document Abstraction
+
+Inside a LangChain-style pipeline, loaded information is generally represented as documents containing:
+
+```text
+page_content
++
+metadata
+```
+
+Conceptually:
+
+```text
+Document
+├── page_content
+└── metadata
+```
+
+Metadata may contain:
+
+```text
+source
+page
+file_name
+document_id
+```
+
+Metadata becomes extremely important in production RAG.
+
+---
+
+# 9. PDF Loading
+
+Conceptual workflow:
+
+```text
+PDF
+ ↓
+PDF Loader
+ ↓
+Extracted Documents
+ ↓
+page_content + metadata
+```
+
+A multi-page PDF may produce multiple document objects or page-level records.
+
+---
+
+# 10. Why You Cannot Just Embed the Entire Document
+
+Suppose a PDF contains hundreds of pages.
+
+You generally should not treat the entire PDF as one embedding unit.
+
+Problems:
+
+- Too much text
+- Retrieval becomes coarse
+- Context windows are limited
+- One vector cannot represent every topic accurately
+- Retrieved context becomes unnecessarily large
+
+Therefore:
+
+```text
+Document
+ ↓
+Chunks
+ ↓
+Embeddings
+ ↓
+Vector DB
+```
+
+---
+
+# 11. Chunking
+
+Chunking means splitting a document into smaller meaningful pieces.
+
+Example:
+
+```text
+Large document
+      ↓
+Chunk 1
+Chunk 2
+Chunk 3
+Chunk 4
+...
+```
+
+---
+
+# 12. Chunk Size
+
+Chunk size determines approximately how much text belongs in each chunk.
+
+There is no universally correct value.
+
+Example:
+
+```text
+chunk_size = 512
+```
+
+is simply a configuration choice.
+
+The correct value depends on:
+
+- Document structure
+- Query type
+- Embedding model
+- LLM context
+- Retrieval quality
+
+---
+
+# 13. Chunk Overlap
+
+If chunks are completely independent:
+
+```text
+Chunk 1: A B C D E
+Chunk 2: F G H I J
+```
+
+important information near the boundary may be separated.
+
+Overlap creates shared context:
+
+```text
+Chunk 1: A B C D E
+Chunk 2:       D E F G H
+```
+
+This helps preserve context around boundaries.
+
+---
+
+# 14. Recursive Character Text Splitter
+
+The video demonstrates a recursive character text splitter.
+
+The general idea is to split text using progressively smaller separators so that chunks remain reasonably coherent.
+
+Conceptually:
+
+```text
+Document
+ ↓
+Try paragraph boundary
+ ↓
+If still too large
+ ↓
+Try sentence / line boundary
+ ↓
+If still too large
+ ↓
+Try smaller separators
+ ↓
+Final chunks
+```
+
+This is generally better than blindly slicing every N characters.
+
+---
+
+# 15. Parsing Before Chunking
+
+A key architecture principle:
+
+```text
+Raw File
+ ↓
+Parsing
+ ↓
+Structured Document
+ ↓
+Chunking
+ ↓
+Embedding
+```
+
+Do not think of chunking as a replacement for parsing.
+
+If a PDF parser destroys tables, headings or structure before chunking, the resulting chunks can already be poor.
+
+---
+
+# 16. Embedding the Chunks
+
+After chunking:
+
+```text
+Chunk
+ ↓
+Embedding Model
+ ↓
+Vector
+```
+
+Example:
+
+```text
+"Revenue increased by 20%"
+        ↓
+[0.18, -0.72, 0.11, ...]
+```
+
+The vector represents the chunk in an embedding space.
+
+---
+
+# 17. Storing Embeddings
+
+```text
+Chunks
+  +
+Metadata
+  +
+Embeddings
+       ↓
+Vector Database
+```
+
+Possible vector databases discussed in the course include:
+
+- Chroma
+- Pinecone
+- FAISS
+- Other popular vector stores
+
+The course uses LangChain to demonstrate interaction with vector databases.
+
+---
+
+# 18. Vector Index
+
+A vector database typically maintains an index to make similarity retrieval efficient.
+
+Conceptually:
+
+```text
+Vectors
+ ↓
+Vector Index
+ ↓
+Fast nearest-neighbor search
+```
+
+Without efficient indexing, searching a huge vector collection can become expensive.
+
+---
+
+# 19. Query-Time Retrieval
+
+The RAG query pipeline starts when the user asks a question.
+
+Example:
+
+```text
+"What did the paper say about YOLOv7?"
+```
+
+Pipeline:
+
+```text
+User Query
+   ↓
+Query Embedding
+   ↓
+Vector Similarity Search
+   ↓
+Top-K Chunks
+```
+
+---
+
+# 20. Similarity Search
+
+Suppose:
+
+```text
+K = 3
+```
+
+The vector database returns the three most similar chunks.
+
+```text
+Query
+ ↓
+Similarity Search
+ ↓
+Chunk A
+Chunk B
+Chunk C
+```
+
+These chunks are then passed to the LLM as context.
+
+---
+
+# 21. Retrieval + LLM
+
+Retrieval alone gives you raw documents/chunks.
+
+The LLM turns them into an answer.
+
+```text
+Question
+   ↓
+Retriever
+   ↓
+Relevant Documents
+   ↓
+LLM
+   ↓
+Natural Language Answer
+```
+
+This is the core idea behind Retrieval-Augmented Generation.
+
+---
+
+# 22. RAG
+
+RAG = **Retrieval-Augmented Generation**
+
+It combines:
+
+```text
+Retrieval
++
+Generation
+```
+
+Instead of asking the LLM to answer entirely from its pretrained knowledge:
+
+```text
+Question
+ ↓
+Retrieve external knowledge
+ ↓
+Give knowledge to LLM
+ ↓
+Generate answer
+```
+
+---
+
+# 23. Why RAG Is Needed
+
+LLMs may:
+
+- Not know private information
+- Not know recent information
+- Produce hallucinations
+- Lack access to your internal documents
+
+RAG provides external context.
+
+Example:
+
+```text
+Company PDF
+ ↓
+Chunk
+ ↓
+Embedding
+ ↓
+Vector DB
+```
+
+Then:
+
+```text
+Employee Question
+ ↓
+Retrieve company information
+ ↓
+LLM
+ ↓
+Answer
+```
+
+---
+
+# 24. Hallucination
+
+The video introduces hallucination as a situation where the model produces incorrect or unsupported information.
+
+Conceptually:
+
+```text
+Question
+ ↓
+LLM lacks reliable information
+ ↓
+Model generates plausible-looking answer
+ ↓
+Incorrect answer
+```
+
+RAG can reduce this by supplying relevant source material.
+
+### Important caveat
+
+RAG does not automatically eliminate hallucinations.
+
+Poor retrieval can still produce poor answers.
+
+---
+
+# 25. The Complete Basic RAG Pipeline
+
+This is the most important diagram from this section.
+
+## Offline / Ingestion
+
+```text
+Documents
+    ↓
+Document Loader
+    ↓
+Parsing
+    ↓
+Cleaning
+    ↓
+Chunking
+    ↓
+Embedding Model
+    ↓
+Vector Database
+```
+
+## Online / Query
+
+```text
+User Question
+      ↓
+Query Embedding
+      ↓
+Vector Search
+      ↓
+Top-K Chunks
+      ↓
+Prompt + Retrieved Context
+      ↓
+LLM
+      ↓
+Answer
+```
+
+---
+
+# 26. Why Chunk Quality Matters
+
+Suppose the correct answer is spread across a document.
+
+Bad chunks:
+
+```text
+Chunk 1:
+half of an important explanation
+
+Chunk 2:
+unrelated section
+
+Chunk 3:
+other information
+```
+
+The retriever may fail to return the correct information.
+
+Good chunks preserve meaningful semantic units.
+
+Therefore:
+
+> RAG quality is heavily dependent on ingestion and chunking quality.
+
+---
+
+# 27. Metadata
+
+Every chunk should ideally retain useful metadata.
+
+Example:
+
+```json
+{
+  "document_id": "doc_123",
+  "source": "employee_handbook.pdf",
+  "page": 17,
+  "section": "Leave Policy"
+}
+```
+
+Metadata allows:
+
+- Filtering
+- Source tracking
+- Citations
+- Debugging
+- Document updates
+- Access control
+
+---
+
+# 28. Retrieval Is Not the Same as Generation
+
+This distinction is essential.
+
+```text
+Retrieval:
+"Which information should I give the model?"
+
+Generation:
+"What answer should the model produce from that information?"
+```
+
+So:
+
+```text
+Retriever = information selection
+
+LLM = answer generation
+```
+
+---
+
+# 29. Basic RAG vs Production RAG
+
+The course demonstrates a basic RAG architecture.
+
+For production systems, you should eventually extend it:
+
+```text
+                 Query
+                   ↓
+            Query Processing
+                   ↓
+          Permission / ACL Filter
+                   ↓
+        ┌──────────┴──────────┐
+        ↓                     ↓
+  Semantic Search       Keyword Search
+        ↓                     ↓
+        └──────────┬──────────┘
+                   ↓
+            Candidate Results
+                   ↓
+                Reranker
+                   ↓
+              Top Context
+                   ↓
+                  LLM
+                   ↓
+             Final Answer
+```
+
+This is the direction to study after understanding the basic implementation.
+
+---
+
+# 30. LangChain Document → RAG Mental Model
+
+You should be able to explain this without code:
+
+```text
+Loader
+  ↓
+Documents
+  ↓
+Text Splitter
+  ↓
+Chunks
+  ↓
+Embeddings
+  ↓
+Vector Store
+  ↓
+Retriever
+  ↓
+Prompt
+  ↓
+LLM
+  ↓
+Answer
+```
+
+If you understand this diagram deeply, you understand the core of a basic LangChain RAG system.
+
+---
+
+# 31. What You Should Study From Part 3
+
+### Must understand deeply
+
+- What LangChain does
+- Chains
+- Agents
+- Tools
+- Memory
+- Document loaders
+- Document objects
+- Parsing
+- Chunking
+- Chunk overlap
+- Embeddings
+- Vector stores
+- Similarity search
+- Top-K retrieval
+- RAG
+- Hallucination
+- Query-time vs ingestion-time processing
+
+### Practical sequence to implement
+
+Build this first:
+
+```text
+PDF
+ ↓
+Loader
+ ↓
+Chunks
+ ↓
+Embeddings
+ ↓
+Chroma/Qdrant
+ ↓
+Retriever
+ ↓
+LLM
+ ↓
+Question Answering
+```
+
+Then improve it with:
+
+```text
+Metadata
+ ↓
+Filtering
+ ↓
+Hybrid retrieval
+ ↓
+Reranking
+ ↓
+Citations
+ ↓
+Evaluation
+```
+
+---
+
+# 32. Final Combined Architecture of the Three Video Sections
+
+The three sections now connect together:
+
+```text
+                  GENERATIVE AI
+                       │
+                       ↓
+                  LLM FUNDAMENTALS
+                       │
+          ┌────────────┼────────────┐
+          ↓            ↓            ↓
+       Tokens      Embeddings    Prompting
+          │            │            │
+          └────────────┼────────────┘
+                       ↓
+                    LLM
+                       │
+             ┌─────────┼─────────┐
+             ↓         ↓         ↓
+          Chains     Tools     Memory
+             │         │
+             └────┬────┘
+                  ↓
+              LangChain
+                  │
+                  ↓
+              DOCUMENTS
+                  │
+               Parsing
+                  ↓
+               Chunking
+                  ↓
+              Embeddings
+                  ↓
+            Vector Database
+                  │
+             Similarity Search
+                  ↓
+               Retrieval
+                  ↓
+             Context + Prompt
+                  ↓
+                  LLM
+                  ↓
+                Answer
+```
+
+---
+
+# 33. Your Study Priority
+
+After these three sections, study in this order:
+
+## Priority 1 — Foundations
+
+- Generative AI
+- LLM
+- Tokens
+- Tokenization
+- Embeddings
+
+## Priority 2 — LLM Application Concepts
+
+- Prompt engineering
+- Prompt templates
+- Chains
+- Memory
+- Tools
+- Agents
+
+## Priority 3 — RAG
+
+- Document loading
+- Parsing
+- Chunking
+- Embeddings
+- Vector DB
+- Similarity search
+- Retrieval
+- RAG
+
+## Priority 4 — Model Customization
+
+- Hugging Face
+- Datasets
+- Fine-tuning
+- Pretrained models
+- Fine-tuning vs RAG
+
+---
+
+# 34. Questions You Should Be Able to Answer
+
+Before moving to the next video section, make sure you can answer these:
+
+### Fundamentals
+
+- What is Generative AI?
+- What is an LLM?
+- Why are LLMs general-purpose?
+- What is a token?
+- What is an embedding?
+- Why do we need embeddings?
+
+### LangChain
+
+- What is LangChain?
+- What is a chain?
+- What is an agent?
+- What is a tool?
+- What is memory?
+- Chain vs agent?
+
+### RAG
+
+- What is RAG?
+- Why do we need RAG?
+- What is a document loader?
+- Why do we chunk documents?
+- What is chunk overlap?
+- What is a vector database?
+- What is similarity search?
+- What is Top-K?
+- How does a query become a retrieved context?
+- How does the LLM use retrieved context?
+
+### Fine-Tuning
+
+- What is fine-tuning?
+- When should you use fine-tuning?
+- When should you use RAG?
+- Why is fine-tuning more expensive?
+
+---
+
+# 35. One Sentence to Remember
+
+If you remember only one architecture from these three sections, remember:
+
+> **Convert knowledge into useful representations, retrieve the right information at query time, and give that information to an LLM through a well-designed prompt.**
+
+That is the foundation of modern LLM applications.
 
