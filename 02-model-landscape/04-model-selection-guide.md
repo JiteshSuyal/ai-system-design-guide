@@ -99,7 +99,10 @@ Start Here
 | **Claude Opus 4.8** | Long-running agentic coding (SWE-bench 88.6%), Dynamic Workflows with parallel subagents, $10/$50 fast mode | GPT-5.5 narrowly leads single-shot SWE-bench; Fable 5 now sits above it on capability | 1M | Codebase-scale migrations, autonomous coding loops, best price-to-capability at the frontier |
 | **GPT-5.5** | SWE-bench Verified leader (88.7%), Terminal-Bench leader (78.2%), native omni multimodal | High cost ($5/$30) | 1M | Multi-agent systems, single-shot coding |
 | **Claude Opus 4.7** | Predecessor flagship (SWE-bench 87.6%, SWE-Bench Pro 64.3%) | Superseded by 4.8 at same price | 1M | Existing 4.7 deployments without migration pressure |
-| **Claude Sonnet 4.6** | Strong cost/quality balance, full 1M at standard price | No Sonnet 4.8 release yet | 1M | General production workhorse |
+| **Claude Opus 5** | Current Opus flagship (July 24, 2026) at unchanged $5/$25; optional Fast mode $10/$50 | Newer than most published third-party evals | 1M | Long-horizon agentic coding and computer use |
+| **Claude Sonnet 5** | The production workhorse since June 30, 2026, at a permanent $2/$10 (cheaper than the Sonnet 4.6 it replaced) | Deliberately reduced cyber capability versus Opus tier | 1M | Default tier for agent fleets and coding at scale |
+| **GPT-5.6 Terra** | GPT-5.5-class quality at $2/$12 after the July 30 cut | Newer line, thinner independent evaluation | 1M | General production default on the OpenAI side |
+| **Claude Sonnet 4.6** | Strong cost/quality balance, full 1M at standard price | Superseded by Sonnet 5, which is both newer and cheaper | 1M | Existing deployments not yet migrated |
 | **Gemini 3.1 Pro** | GPQA Diamond leader (94.3%), 1M multimodal, Deep Think mode | Latency spikes on Deep Think | 1M | Scientific reasoning, multimodal |
 | **DeepSeek-R1** | Open-source reasoning, competitive math | Reasoning only; non-frontier general use | 128K | Math, complex debug, open-weight reasoning |
 
@@ -156,9 +159,13 @@ Start Here
 | **Claude Opus 4.8** | $5.00 | $25.00 | Frontier coding and agentic; optional fast mode $10 / $50 |
 | **Claude Opus 4.7** | $5.00 | $25.00 | Same standard price; fast mode is the more expensive $30 / $150 |
 | **GPT-5.5** | $5.00 | $30.00 | Single-shot SWE-bench leader |
-| **Claude Sonnet 4.6** | $3.00 | $15.00 | Balanced choice; no Sonnet 4.8 release yet |
+| **Claude Opus 5** | $5.00 | $25.00 | Current Opus flagship; Fast mode $10/$50 |
+| **Claude Sonnet 5** | $2.00 | $10.00 | Permanent price since Aug 10, 2026; the default workhorse |
+| **GPT-5.6 Terra** | $2.00 | $12.00 | Cut 20% on July 30, 2026 |
+| **GPT-5.6 Luna** | $0.20 | $1.20 | Cut 80% on July 30, 2026; volume tier |
+| **Claude Sonnet 4.6** | $3.00 | $15.00 | Superseded by the cheaper Sonnet 5 |
 | **Gemini 3.1 Pro** | $2.00 | $12.00 | Best value frontier; multimodal |
-| **DeepSeek V4 Pro** | $0.435 | $0.87 | 75% discount made permanent May 22 |
+| **DeepSeek V4 Pro** | $0.435 | $0.87 | Rises to $1.32 / $3.96 at peak (half that off-peak) from Aug 16, 2026 |
 | **Gemini 3.1 Flash** | $0.10 | $3.00 | RAG-at-scale; cache discount |
 | **DeepSeek V4 Flash** | $0.14 | $0.28 | Cheapest frontier-class 1M context |
 

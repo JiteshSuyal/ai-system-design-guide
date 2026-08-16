@@ -119,7 +119,7 @@ Agent Skills are folders of instructions, scripts, and resources that an agent l
 
 ### What is the best LLM right now?
 
-There is no single best model in June 2026, but the capability ceiling moved: **Claude Fable 5** (June 9) is Anthropic's most capable widely released model, a Mythos-class model with safeguards at $10/$50 per 1M. Below the ceiling, the leaderboard is fractured by task. **Claude Opus 4.8** leads SWE-Bench Pro at 69.2% for long-horizon coding at half Fable's price. **GPT-5.5** holds SWE-bench Verified (88.7%) and Terminal-Bench. **Gemini 3.1 Pro** leads GPQA Diamond at 94.3% for scientific reasoning. **Claude Sonnet 4.6** remains the price-to-quality workhorse at $3/$15. See [Model Taxonomy](../02-model-landscape/01-model-taxonomy.md).
+There is no single best model as of August 2026, and the leaderboard is fractured by task. **Claude Fable 5** holds the capability ceiling at $10/$50 per 1M. **Claude Opus 5** (July 24) is the long-horizon agentic coding choice at $5/$25, with a Fast mode at $10/$50. **GPT-5.6** ships as three tiers, with Sol at $5/$30, Terra at $2/$12 as the general production default, and Luna at $0.20/$1.20 for volume work. **Gemini 3.7 Flash** (August 13) is the cheap multimodal workhorse at a half-price $0.75/$3.75 through year-end. **Claude Sonnet 5** is the price-to-quality workhorse at a permanent $2/$10, cheaper than the Sonnet 4.6 it replaced. See [Model Taxonomy](../02-model-landscape/01-model-taxonomy.md).
 
 ### How much does Claude / GPT / Gemini / DeepSeek cost?
 
@@ -233,7 +233,7 @@ Sandboxing isolates the code an agent generates and runs from the host system. T
 
 ## Related Reading
 
-- [Question Bank (110 senior interview questions)](01-question-bank.md)
+- [Question Bank (128 senior interview questions)](01-question-bank.md)
 - [Answer Frameworks](02-answer-frameworks.md)
 - [Common Pitfalls](03-common-pitfalls.md)
 - [Whiteboard Exercises](04-whiteboard-exercises.md)

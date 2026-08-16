@@ -1,6 +1,6 @@
 # AI System Design Interview Question Bank
 
-A topic-organized bank of 122 AI system design interview questions (Q1-Q122, continuously numbered) with model answers, follow-ups, and signals strong candidates show, plus five unnumbered deep-dive scenarios. Updated through July 2026.
+A topic-organized bank of 128 AI system design interview questions (Q1-Q128, continuously numbered) with model answers, follow-ups, and signals strong candidates show, plus five unnumbered deep-dive scenarios. Updated through August 2026.
 
 This chapter provides a comprehensive collection of interview questions organized by topic. Each question includes the depth of answer expected and key points that strong candidates cover. Pair this with the [Answer Frameworks](02-answer-frameworks.md) (the meta-skill that turns memorized answers into fluent ones), the [FAQ](07-faq.md) (short answers to the most-asked AI engineering questions), and the [Job Market Trends](06-job-market-trends-2026.md) (the hiring context that shapes what gets asked right now).
 
@@ -8,7 +8,7 @@ This chapter provides a comprehensive collection of interview questions organize
 
 ```mermaid
 mindmap
-  root((122 Questions))
+  root((128 Questions))
     RAG Architecture
       Pipeline design
       Chunking
@@ -61,10 +61,11 @@ mindmap
 - [Ensemble Methods Questions](#ensemble-methods-questions) (Q40-Q49)
 - [System Design Scenarios](#system-design-scenarios) (5 deep-dive walkthroughs)
 - [Advanced Questions (December 2025)](#advanced-questions-december-2025) (Q50-Q65)
-- [Advanced Questions - March 2026](#advanced-questions--march-2026) (Q66-Q80)
-- [Advanced Questions - May 2026](#advanced-questions--may-2026) (Q81-Q110)
-- [Advanced Questions - June 2026](#advanced-questions--june-2026) (Q111-Q116)
-- [Advanced Questions - July 2026](#advanced-questions--july-2026) (Q117-Q122) ⭐ *NEW*
+- [Advanced Questions - March 2026](#advanced-questions---march-2026) (Q66-Q80)
+- [Advanced Questions - May 2026](#advanced-questions---may-2026) (Q81-Q110)
+- [Advanced Questions - June 2026](#advanced-questions---june-2026) (Q111-Q116)
+- [Advanced Questions - July 2026](#advanced-questions---july-2026) (Q117-Q122)
+- [Advanced Questions - August 2026](#advanced-questions---august-2026) (Q123-Q128) ⭐ *NEW*
 
 ---
 
@@ -5188,13 +5189,164 @@ The principle interviewers are probing: prompt injection remains unsolved, so th
 
 ---
 
+## Advanced Questions - August 2026
+
+*Fresh questions reflecting the August 2026 landscape: the first major inference price increase, capability-tiered access control going mainstream, a supply-chain worm that targeted coding agents directly, agent plugins as a packaging and review problem, the stateless MCP core's new attack surface, and synthetic-content marking becoming legally enforceable. Designed for senior+ candidates.*
+
+### Q123: DeepSeek just raised V4 prices 3x to 12x and moved to peak and off-peak billing, while Claude Sonnet 5 made its introductory price permanent. Your cost model assumed cheap inference stays cheap. Rebuild it.
+
+**What interviewers look for:**
+- Treating provider pricing as a variable input, not a constant
+- Understanding that price direction is no longer uniform across vendors
+- Concrete architecture for surviving a repricing without a rewrite
+
+**Strong answer:**
+
+"August 2026 broke the assumption that inference prices only fall. DeepSeek raised V4 prices between 3x and 12x depending on token type, with cache-hit input rising the most, and split billing into peak and off-peak windows where off-peak is exactly half peak. At peak, V4-Flash output now costs more than GPT-5.6 Luna. Meanwhile Anthropic went the other way and made Sonnet 5's $2/$10 introductory rate permanent. Any cost model with a hardcoded 'cheapest provider' is wrong in both directions.
+
+**What I change structurally:**
+
+1. **Price becomes configuration, not code.** A rate table keyed by provider, model, token type, and time window, versioned and dated. Cost projections read from it. When a provider reprices, I change one file and re-run the projections rather than grepping for dollar amounts across a codebase.
+2. **Cost per resolved task, not per token.** The repricing hit cache-hit input hardest, which punishes exactly the cache-heavy agent loops that looked cheapest per token. I measure the unit that matters to the business and let the router optimize against it.
+3. **Time-aware routing.** Peak and off-peak billing is new in this market and it maps cleanly onto work that is already deferrable. Batch classification, backfills, and nightly evaluation runs move to off-peak windows; interactive traffic does not. That is a scheduling change, not a model change, and it halves the bill on the deferrable share.
+4. **Capability-equivalence classes, not a favorite model.** I maintain a matrix of which models can actually serve which step, given tool-call fidelity, context length, and output format. Repricing then becomes a routing-policy edit inside an equivalence class rather than a migration.
+5. **Contract and lock-in review.** Introductory pricing is a dated fact. Sonnet 5's became permanent; Gemini 3.7 Flash's half-price rate expires December 31 and then doubles. I annotate every introductory rate with its expiry in the rate table and run the model against the post-expiry number before committing volume.
+
+**The judgment call:** I would not chase the cheapest provider on every repricing. Switching has real costs in prompt tuning, eval re-runs, and behavioral drift. My rule is that a provider change needs either a sustained cost delta above roughly 30% on a material workload, or a capability reason. Below that, absorb it and keep the stack stable."
+
+**Follow-up to expect:** How do you detect a silent repricing before finance does? (Track effective cost per 1M tokens per model from usage metadata as a monitored metric with alerting, since providers change list prices more often than they send emails.)
+
+### Q124: Three labs now gate their strongest cyber-capable models behind approval tiers with identity verification and hardware keys. You are shipping a dual-use capability in your own product. Design the access control.
+
+**What interviewers look for:**
+- Recognizing capability tiering as an architecture pattern rather than a policy footnote
+- Designing verification and revocation, not just a feature flag
+- Honest treatment of the cost and friction the tiering imposes
+
+**Strong answer:**
+
+"The pattern is now well established in production. OpenAI split its Daybreak program into Blue for approved defenders using general-purpose models and Red for `gpt-5.6-cyber`, a model deliberately trained to refuse less on security work, priced at 2.5x the flagship, restricted to a single API surface, with hardware security keys mandatory from September 1. Anthropic runs the same shape with the Fable 5 and Mythos 5 split, and Google shipped a government-gated Gemini Flash Cyber variant. Three labs, one pattern.
+
+**Applying it to my own dual-use feature:**
+
+1. **Separate the capability from the product.** The permissive path is a distinct endpoint with its own model configuration, quota, and audit stream, not a flag on the main path. This is what makes revocation possible: I can turn off one endpoint without shipping a release.
+2. **Verification proportional to blast radius.** Tier one is self-serve with logging. Tier two requires a verified organization identity, a named accountable owner, and a signed use-case attestation. Tier three requires all of that plus hardware-backed authentication, because a stolen session token on the permissive path is the whole threat model.
+3. **Approval is a renewable grant, not a permanent state.** Access carries an expiry and a re-attestation cycle. Most access-control failures I have seen are not wrongly granted access; they are correctly granted access that nobody ever removed.
+4. **Log for a subpoena, not for a dashboard.** Every request on the permissive path records verified identity, the attested use case, the full prompt and response, and the approving grant ID, in an append-only store with a retention period set by legal rather than by cost.
+5. **Price the friction honestly.** Tiering costs real conversion. The reason to accept it is that the alternative is either shipping the capability to everyone or to no one, and both are worse. I would say that out loud in a design review rather than pretending the tier is free.
+
+**The failure mode I would watch:** tier leakage, where the general path quietly gains enough capability to do the restricted work. That needs a recurring red-team check against the *unrestricted* tier, not just the restricted one."
+
+**Follow-up to expect:** What if a customer needs the capability but cannot pass verification? (Escalate to a human review path with a scoped, time-boxed, heavily logged grant. The answer is never to weaken the tier definition for one account.)
+
+### Q125: A self-propagating npm worm planted editor and agent auto-execution hooks in poisoned packages, so simply opening the repository ran the payload with no install step. Design supply-chain defense for a team running coding agents.
+
+**What interviewers look for:**
+- Understanding that the agent and editor config surface is now an execution surface
+- Defense that does not rely on developers noticing
+- Blast-radius thinking about credentials on developer machines
+
+**Strong answer:**
+
+"The August 4 Shai-Hulud worm is the clearest example yet that the developer workstation is the target. It seeded from one package, published poisoned versions across hundreds of package names in a few hours, hopping publisher organizations every few minutes. The part that matters architecturally is not the `preinstall` script, which is a known vector, but that the repository also carried agent and editor auto-execution config: a session-start hook in the agent settings and a folder-open task in the editor config, each referencing a script in the other's directory to survive a casual review. Opening the checked-out repo executed the payload without anyone running an install.
+
+**Defenses, in the order I would implement them:**
+
+1. **Treat agent and editor configuration as executable code.** Files matching the agent settings and editor task patterns get mandatory review, are covered by a CODEOWNERS rule, and are diffed loudly in code review. Most teams review `package.json` and ignore these.
+2. **Untrusted repositories open in a container, always.** Cloning a dependency to read it, reproducing a customer bug, reviewing an outside contribution: all of it happens in a devcontainer with no host credential mounts. This is the single control that turns the incident from a credential breach into a contained execution.
+3. **Kill ambient credentials on the workstation.** The payload harvested cloud credentials and tokens. Short-lived, scoped credentials issued per session mean the blast radius is minutes rather than everything the developer can reach.
+4. **Pin and delay.** Lockfiles with integrity hashes, plus a cooldown policy that refuses dependency versions published in the last N days for anything outside a security patch. The worm's poisoned versions were live and being pulled within the same hour; a 72-hour cooldown removes most of that exposure at almost no cost.
+5. **Disable auto-run by default in fleet policy.** Folder-open tasks and session-start hooks should be opt-in per repository through managed settings, not a per-developer preference.
+6. **Detect on egress.** Assume execution happens. Workstation egress to unexpected hosts, and any read of cloud credential paths by a process that is not the cloud CLI, are the signals that catch this class regardless of the specific vector.
+
+**The framing I would offer:** this is not really a package-manager problem. It is that we gave agents and editors the ability to execute on open, and the supply chain noticed."
+
+**Follow-up to expect:** How does this change your policy on agent plugins and skills from public marketplaces? (Same class of problem with fewer eyeballs: pin versions, prefer signed publishers, review the bundled MCP server declarations, and never install one on a machine holding long-lived credentials.)
+
+### Q126: Agent Plugins bundle skills and MCP servers into one installable unit, and published research puts static detection of malicious skills at 0% for host destruction. Design the review and distribution pipeline for internal plugins.
+
+**What interviewers look for:**
+- Understanding what a plugin actually grants (instructions plus capability)
+- Not over-trusting static analysis, with a concrete reason
+- A pipeline that scales past manual review
+
+**Strong answer:**
+
+"Agent Plugins reached 1.0 in August and packages two portable things: Agent Skills, which are instructions, and MCP server declarations, which are capability. Installing one is closer to installing a dependency than adding a bookmark, and the detection research is sobering. A five-stage static pipeline over 2,266 adversarial skills achieved 0.93 AUC overall but with wildly uneven coverage: 93% detection for data exfiltration, 42% for natural-language prompt injection, and 0% for host destruction, because destructive skills use ordinary shell commands that are statically indistinguishable from legitimate ones.
+
+**So the pipeline cannot be 'scan and approve.'**
+
+1. **Split the review by component type.** MCP server declarations get reviewed as infrastructure: what transport, what endpoint, what environment variables, what scopes. Skills get reviewed as instructions: what do they tell the agent to do, and does anything in them try to widen the action surface. These are different reviews with different reviewers.
+2. **Static analysis as a filter, never a gate.** Run it, because 93% on exfiltration is worth having, but treat a clean result as 'no known-bad pattern found' rather than 'safe'. The 0% figure means the absence of a finding carries almost no information for the most destructive category.
+3. **Capability review is the real gate.** The question that decides approval is not 'is this skill malicious' but 'what can an agent do after loading this that it could not do before'. If a plugin adds an MCP server with shell execution or write access to a production system, it goes to a security review regardless of how clean the skill text is.
+4. **Runtime containment is what actually holds.** Plugins run against sandboxed tools with allowlisted egress and human approval on irreversible actions. This is the layer that survives a skill nobody caught, and every design should assume one gets through.
+5. **Distribution through an internal registry only.** Signed, versioned, pinned. No direct installs from public marketplaces onto machines with credentials. Enterprise settings now let plugin installation, marketplace access, and MCP allowlists be managed from one policy file, so use it.
+6. **Provenance and revocation.** Record which agents loaded which plugin version, so a bad version can be traced and pulled rather than discovered by archaeology.
+
+**The honest summary:** review reduces the rate, containment bounds the damage, and only containment is load-bearing."
+
+**Follow-up to expect:** How do you keep the internal registry from becoming a bottleneck? (Tier it: low-capability plugins with no MCP servers and no scripts get automated checks and self-service; anything granting capability goes to review. Most submissions are the former.)
+
+### Q127: The MCP stateless core replaced sessions with server-minted state handles, and an audit found 91.8% of internet-facing MCP servers run without OAuth. Design a secure multi-tenant MCP server on the stateless spec.
+
+**What interviewers look for:**
+- Grasping why statelessness removed accidental isolation
+- Correct handling of handles as names, not credentials
+- Multi-tenancy discipline that survives horizontal scaling
+
+**Strong answer:**
+
+"The 2026-07-28 revision removed protocol-level sessions, so cross-request state now lives behind explicit handles the server mints and the client passes back as ordinary tool arguments. The spec names the resulting attack class directly: state-handle hijacking, where someone obtains or guesses a handle and reads or modifies another tenant's state.
+
+The subtle part is what changed. In the stateful era the session carried identity, so even a sloppy server got some tenant isolation for free. Statelessly, nothing is free, and the audit numbers show the field has not caught up: of 414 dynamically tested production servers, 91.8% had no OAuth at all and 687 tool instances exposed uncontrolled shell execution.
+
+**Design:**
+
+1. **Every request re-establishes identity.** The server verifies the bearer token on every inbound request and derives tenant identity from the verified token, never from a client-supplied field. Possession of a handle proves nothing.
+2. **Handles are namespaced to the authenticated principal.** State is keyed as tenant plus handle, and a lookup with a mismatched tenant returns not-found rather than forbidden, so the handle space cannot be probed for existence.
+3. **Handles are unguessable and expiring.** Drawn from a cryptographically secure RNG with enough entropy that enumeration is pointless, with a TTL matched to the workflow they represent.
+4. **Audience-bound tokens.** Tokens are bound to a specific server URI per RFC 8707 so a token minted for one MCP server cannot be replayed against another, which matters more now that a fleet may run many servers behind one gateway.
+5. **The state store enforces the boundary too.** Row-level isolation keyed on tenant, so an application bug cannot cross tenants even if a handler forgets its check. Defense in depth means the second layer assumes the first was written on a Friday.
+6. **Cacheable list results need care.** The revision requires `ttlMs` and `cacheScope` on list results. Anything tenant-specific must be marked private, because mislabeling a tenant-scoped tool catalog as public leaks the shape of one customer's integration to another.
+7. **Rate limit and audit per identity.** Both scoped to the verified principal rather than to the connection, which no longer exists.
+
+**Verification:** a multi-tenant test that runs tenant A's handle against tenant B's token in CI. If that returns anything except not-found, the build fails."
+
+**Follow-up to expect:** How do you migrate an existing stateful fleet without breaking old clients? (Serve both: the C# SDK's hybrid session mode lets one endpoint handle stateful and stateless clients simultaneously. Given v2 SDK downloads are around 2% of v1, plan for a long dual-version period rather than a cutover.)
+
+### Q128: EU AI Act Article 50 became enforceable on August 2 with fines up to 3% of global turnover, and California's transparency law took effect the same day. You ship a product that generates text and images in both markets. What do you build?
+
+**What interviewers look for:**
+- Knowing what actually became enforceable rather than reciting the whole act
+- Treating provenance as a pipeline component with real engineering cost
+- Handling the two regimes' different requirements without building twice
+
+**Strong answer:**
+
+"Two things landed on August 2, 2026, and they are not the same obligation. Under EU AI Act Article 50, providers of systems that generate synthetic audio, image, video, or text must mark outputs in a machine-readable format detectable as artificially generated, and systems that interact directly with people must disclose that fact unless it is obvious. Penalties reach 15 million euros or 3% of worldwide turnover, whichever is higher. One timing detail worth knowing: systems already on the market before August 2 have until December 2, 2026 to meet the marking duty, while interaction disclosure applied immediately. Separately, the Commission gained the power to fine general-purpose model providers under Article 101 on the same date. California's law, operative the same day, is more prescriptive: covered providers above a million monthly users must embed a latent disclosure carrying the provider name, system name and version, creation timestamp, and a unique identifier, and must offer a free public detection tool.
+
+**What I build:**
+
+1. **A provenance service, not a per-surface hack.** One component sits at the output boundary of every generation path and applies marking before content leaves the system. Building it per feature guarantees a gap.
+2. **Two layers, because they fail differently.** Content Credentials style signed metadata carries the rich disclosure fields California requires and survives well-behaved pipelines; a watermark carries a durable signal that survives re-encoding and metadata stripping. For text, watermarking approaches are now shipping in production at frontier labs, which makes text marking a live requirement rather than a research topic.
+3. **Design for the union, not a superset.** Neither regime contains the other. California is more prescriptive about what a latent disclosure carries, so its four fields become my metadata schema for image, video, and audio. But California's latent-disclosure duty excludes AI-generated text, and EU Article 50(2) requires text marking, so text marking and the AI-interaction disclosure are EU-driven additions on top. Implementing only California's list leaves an uncovered EU gap.
+4. **Detection is a product surface.** California requires a free public detection tool, which means the verification path needs an SLO, abuse protection, and a public endpoint. Teams routinely miss that this is a shipped feature, not a compliance document.
+5. **Interaction disclosure at the UI layer.** The 'you are talking to an AI' notice needs to be present, recorded, and testable, with the 'obvious to a reasonably informed person' carve-out documented per surface rather than assumed.
+6. **Evidence, retained.** Log what was marked, with what version of the marker, under what policy. Enforcement asks for records, and reconstructing them later is not possible.
+
+**One caution I would raise in the room:** marking is removable. Provenance reduces ambiguity for cooperating consumers of the content; it is not a control against a determined adversary, and presenting it as one to a regulator or an executive sets up a bad conversation later."
+
+**Follow-up to expect:** What about the high-risk obligations everyone was preparing for? (They moved. The Digital Omnibus became law as Regulation (EU) 2026/1744, in force July 27, 2026, pushing Annex III high-risk duties to December 2027 and product-embedded high-risk to August 2028. The transparency work is now the near-term deliverable; keep building eval documentation for the later deadlines.)
+
+---
+
 ## Key Takeaways
 
 - Practice answers out loud at the level of detail shown here; mumbled hand-waving fails staff-level loops even when the underlying knowledge is correct.
 - Always state the latency, scale, and accuracy assumptions before sketching architecture; interviewers downgrade candidates who design without scope.
 - Strong answers cite a specific tradeoff and a concrete number (latency in ms, cost per token, recall at K); generic answers get scored as junior.
 - The "follow-up to expect" hints under each question are real; prepare a one-paragraph extension for each.
-- The May through July 2026 sections (Q81 onward) reflect what's actually being asked in current loops; older questions test foundational depth, not currency.
+- The May through August 2026 sections (Q81 onward) reflect what's actually being asked in current loops; older questions test foundational depth, not currency.
 - Pair this bank with the [Answer Frameworks](02-answer-frameworks.md), [Whiteboard Exercises](04-whiteboard-exercises.md), and the [Job Market Trends](06-job-market-trends-2026.md).
 
 ---

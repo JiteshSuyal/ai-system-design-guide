@@ -8,7 +8,8 @@ Tools are the "hands" of an agent. The industry has standardized on the **Model 
 - [Model Context Protocol (MCP)](#mcp)
 - [MCP 2.0: Streamable HTTP & Auth](#mcp-updates)
 - [MCP 2026-07-28: The Stateless Rewrite](#mcp-2026-07-28)
-- [MCP Extensions & Ecosystem (July 2026)](#mcp-roadmap)
+- [MCP Extensions & Ecosystem (August 2026)](#mcp-roadmap)
+- [Agent Plugins](#agent-plugins)
 - [Agent-to-Agent Protocol (A2A)](#a2a)
 - [The Protocol Landscape: MCP + A2A + ACP](#protocol-landscape)
 - [Computer-Use Tools (Anthropic)](#computer-use)
@@ -207,30 +208,76 @@ The core is now deliberately small; everything else is an **extension**, identif
 - Plan the auth migration from DCR to Client ID Metadata Documents; validate `iss` per RFC 9207 and never reuse client credentials across issuers.
 - Budget real work: the maintainers themselves warn that custom implementations face significant uplift.
 
-> *Verified July 31, 2026. Sources: modelcontextprotocol.io/specification/2026-07-28/changelog, blog.modelcontextprotocol.io*
+> *Verified August 15, 2026. Sources: modelcontextprotocol.io/specification/2026-07-28/changelog, blog.modelcontextprotocol.io*
 
 ---
 
-## MCP Extensions & Ecosystem (July 2026)
+## MCP Extensions & Ecosystem (August 2026)
 
-The roadmap items this chapter tracked through May 2026 have largely shipped, and the ecosystem numbers moved another order of magnitude. Status as of July 2026:
+The roadmap items this chapter tracked through May 2026 have largely shipped. Status as of August 2026:
 
-| Roadmap item (May 2026 framing) | Status (July 2026) |
+| Roadmap item (May 2026 framing) | Status (August 2026) |
 |---------------------------------|--------------------|
 | Transport scalability / stateless core | **Shipped** in the 2026-07-28 revision (see [the stateless rewrite](#mcp-2026-07-28)) |
 | MCP Apps (server-rendered UIs) | **Shipped** January 26, 2026 as the first official extension; rendered by Claude, ChatGPT, VS Code, Goose, and Microsoft 365 Copilot, among others; early apps-shipping partners include Figma, monday.com, and Adobe Express |
-| Tasks extension (long-running work) | **Shipped** as the official `io.modelcontextprotocol/tasks` extension, redesigned around poll-based task handles |
+| Tasks extension (long-running work) | **Shipped.** The 2026-07-28 revision moved Tasks out of the experimental core into the `io.modelcontextprotocol/tasks` extension, redesigned around poll-based task handles. The reference repository is still labeled experimental, so treat the interface as settling rather than settled. The Agents Working Group (active since February 2026, charter still pending) is the group incubating it |
 | Enterprise authentication | **Shipped** June 18, 2026 as the Enterprise-Managed Authorization extension (Okta first IdP; Claude and VS Code at launch) |
 | MCP Server Cards (`.well-known` discovery) | Still a draft, developed as an experimental extension (SEP-2127). Distinct from the new core `server/discover` RPC, which is an in-protocol capability query |
-| MCP Registry | Still in preview (`registry.modelcontextprotocol.io`); GA timing unannounced |
+| MCP Registry | Still in preview (`registry.modelcontextprotocol.io`); GA timing unannounced. Release v1.8.1 fixed a GitHub Pages organization-namespace takeover |
 
 **Discovery now has two layers worth keeping straight:** pre-connection HTTP discovery via `.well-known` server cards (experimental; feeds registries and crawlers) versus the in-protocol `server/discover` RPC (mandatory core since 2026-07-28; feeds version negotiation).
 
-**Ecosystem scale (July 2026):** official MCP SDKs run at roughly 500M monthly downloads with the TypeScript and Python SDKs past 1B total each. Beta SDKs for the 2026-07-28 revision shipped June 29, and at the July 28 final release AWS, Cloudflare, Google Cloud, Microsoft, and Netlify announced launch support. Microsoft rolled out MCP-based Federated Copilot Connectors manageable from the Microsoft 365 admin center, Apple made Xcode an MCP host for external coding agents, and Bloomberg has published a production case study of MCP as its internal agent-tool layer.
+**Ecosystem scale (August 2026):** SDK downloads run in the hundreds of millions per month. The protocol's own July 28 release post cited close to half a billion monthly across Tier 1 SDKs; Anthropic separately reported 400M monthly and a 4x increase across the year, so treat the aggregate as an order of magnitude rather than a precise figure and check the metric definition before quoting it. One connector directory alone now lists **over 950 MCP servers**. At the July 28 final release AWS, Cloudflare, Google Cloud, Microsoft, and Netlify announced launch support.
+
+**But the migration to the stateless revision is early.** Measured over the 30 days to August 14, the v1 TypeScript SDK (`@modelcontextprotocol/sdk`) drew roughly 200M npm downloads. The v2 line is split across packages rather than one, with `@modelcontextprotocol/server` around 5.3M, `@modelcontextprotocol/core` around 3.9M, and `@modelcontextprotocol/client` around 2.9M, so on any single-package comparison v2 is running in the low single-digit percentage of v1 volume a few weeks after GA. Plan for a long dual-version period: the C# SDK v2.2.0 (August 13) added an `HttpServerSessionMode` that lets a single endpoint serve both 2025-11-25 stateful clients and 2026-07-28 stateless clients at once, which is the pattern to copy if you operate a server fleet with mixed clients. SDK maturity is moving quickly alongside it: the Rust SDK reached 3.1.x with stateless validation, the Ruby SDK hit 1.0 and moved to Tier 2, and a conformance suite (0.2.0-alpha.11) now publishes frozen requirement sets for the revision. Microsoft rolled out MCP-based Federated Copilot Connectors manageable from the Microsoft 365 admin center, Apple made Xcode an MCP host for external coding agents, and Bloomberg has published a production case study of MCP as its internal agent-tool layer.
 
 **Governance**: MCP is governed under the Linux Foundation's Agentic AI Foundation. The Governance Working Group runs a Contributor Ladder and a delegation model allowing domain-specific working groups to accept SEPs (Specification Enhancement Proposals) without full core-maintainer review; the 2026-07-28 revision added a formal Extensions Track.
 
-> *Verified July 31, 2026. Sources: modelcontextprotocol.io, blog.modelcontextprotocol.io*
+> *Verified August 15, 2026. Sources: modelcontextprotocol.io, blog.modelcontextprotocol.io*
+
+---
+
+## Agent Plugins
+
+MCP standardizes how an agent reaches a tool. **Agent Plugins**, which reached 1.0.0 on August 6, 2026, standardizes how you *ship* a bundle of capability to an agent. It is a vendor-neutral packaging format governed by a technical steering committee whose launch maintainers were Amazon, Cursor, Microsoft, OpenAI, and Vercel, with Google joining on launch day, and GitHub made it generally available across VS Code, Copilot CLI, the Copilot SDK, and the Copilot app on August 12.
+
+A plugin is a directory:
+
+```
+my-plugin/
+├── plugin.json          # required manifest
+├── skills/              # optional: Agent Skills (SKILL.md files)
+│   └── code-review/
+│       └── SKILL.md
+├── mcp.json             # optional: MCP server declarations
+└── com.example.client/  # optional: client-specific extras, namespaced
+```
+
+The `mcp.json` schema supports three server shapes (stdio with command, args, and env; Streamable HTTP; and SSE), and reserves two environment variables, `PLUGIN_ROOT` and `PLUGIN_DATA`, that the client injects at load time.
+
+The design decision worth studying is what the spec **refuses** to standardize. Only two component types are portable: skills and MCP servers. Commands, hooks, subagents, rules, and LSP servers stay client-specific unless carried in a namespaced directory. That keeps the portable surface small enough that a plugin genuinely runs everywhere, and pushes the fast-moving, client-specific parts into namespaces where they cannot break interoperability.
+
+### How the Three Layers Fit
+
+```mermaid
+flowchart TD
+    P[Agent Plugin<br>distribution unit] --> S[Agent Skills<br>what the agent knows how to do]
+    P --> M[MCP servers<br>what the agent can touch]
+    S -.progressive disclosure.-> A[Agent runtime]
+    M -.tool calls.-> A
+    A -->|delegates across orgs| A2[A2A: other agents]
+```
+
+| Layer | Standardizes | Unit | Governance |
+|-------|--------------|------|------------|
+| **Agent Skills** (`SKILL.md`) | Procedures and domain knowledge the agent applies | A folder with frontmatter plus optional scripts and assets | agentskills.io |
+| **MCP** | Access to tools, data, and resources | A server speaking JSON-RPC over stdio or Streamable HTTP | Linux Foundation, Agentic AI Foundation |
+| **Agent Plugins** | Distribution and installation of the two above | A directory with `plugin.json` | Agent Plugins TSC |
+| **A2A** | Delegation between agents across vendor or org boundaries | An agent endpoint with a signed Agent Card | Linux Foundation |
+
+The practical consequence for platform teams: enterprise administration now has one control point. GitHub reuses the existing `managed-settings.json` so plugin installation, marketplace access, and MCP server allowlists are all managed through the same file. If you are standing up an internal agent platform, the plugin is the unit you review, sign, and distribute, not the individual server.
+
+**The security caveat that comes with it:** a plugin bundles instructions (skills) with capability (MCP servers), so installing one is closer to installing a package than adding a bookmark. Static analysis of skills has a hard detection ceiling, with published results showing 93% detection for data exfiltration but only 42% for natural-language prompt injection and **0% for host destruction**, because destructive skills use ordinary shell commands that look identical to legitimate ones. Review plugins like dependencies: pin versions, prefer signed sources, and never let a plugin widen the action surface of the agent that loads it.
 
 ---
 
@@ -264,7 +311,7 @@ A2A tasks support long-running operations with streaming status updates, making 
 
 - Backed by 50+ technology partners including Atlassian, Salesforce, SAP, LangChain, and PayPal
 - Donated to the **Linux Foundation** in June 2025 as an open governance project
-- **Version 0.3** (latest as of May 2026) added gRPC support, signed security cards, and extended Python SDK support
+- **Version 0.3** added gRPC support, signed security cards, and extended Python SDK support. As of August 2026 the newest A2A **specification** release is **v1.0.1** (May 28, 2026); version numbers above that circulating in the ecosystem refer to language SDKs, such as `a2a-java` v1.2.0, not to the protocol
 - NIST launched an "AI Agent Standards Initiative" in February 2026 partly in response to A2A/MCP momentum
 
 > *Verified May 2026. Source: developers.googleblog.com, a2a-protocol.org*
@@ -336,9 +383,9 @@ sequenceDiagram
 
 The Support agent never sees the ledger. The Refund agent owns ledger access through its own MCP server and enforces a different policy. The A2A task is asynchronous: the Support agent can yield to the user with a hold message while the refund processes and reattach when the artifact arrives.
 
-### MCP 2026 Roadmap Highlights
+### MCP 2026 Roadmap Highlights: Both Shipped
 
-The MCP roadmap for the remainder of 2026 concentrates on two areas. **Transport scalability** targets multi-instance and load-balanced deployments: Streamable HTTP gains session resumption and sticky-session hints so an MCP server can run as a horizontally scaled Kubernetes Deployment without breaking long-lived tool sessions. **Enterprise-managed auth** formalizes the OAuth Resource Server posture: MCP servers are now classified as Resource Servers under RFC 8707, which means tokens are audience-bound to a specific server URI and cannot be replayed across servers.
+The two roadmap items this section tracked in mid-2026, transport scalability and enterprise-managed auth, have both landed. Transport scalability arrived not as session resumption but as the opposite design: the 2026-07-28 revision removed sessions from the protocol core entirely (see [the stateless rewrite](#mcp-2026-07-28)). Enterprise-managed auth shipped as the Enterprise-Managed Authorization extension in June 2026. The RFC 8707 posture still holds and is now hardened further: MCP servers are OAuth Resource Servers, tokens are audience-bound to a specific server URI and cannot be replayed across servers.
 
 ### MCP Production Hardening (post-May-2026)
 
@@ -346,6 +393,20 @@ May 2026 surfaced a class of vulnerability in the MCP STDIO transport: STDIO MCP
 
 1. **Migrate STDIO MCP servers to HTTP transport with TLS** wherever possible. HTTP transport forces an explicit trust boundary (the network) and enables OAuth 2.1 Resource Server enforcement, which STDIO cannot provide.
 2. **For STDIO servers that cannot migrate**, run each server in a dedicated container with no host filesystem mounts, no network egress, a strict CPU and memory budget, and a read-only image. Treat the container as the trust boundary; the blast radius of compromise is the container.
+
+### State-Handle Hijacking: The Stateless Core's New Attack Surface
+
+The 2026-07-28 stateless rewrite removed protocol-level sessions, so a server that needs cross-request state now mints an explicit handle (a cart ID, a workflow ID) and returns it as an ordinary tool argument. The revised security best-practices document names the resulting attack: **state-handle hijacking**, where an unauthorized party obtains or guesses a handle and uses it to read or modify another user's state.
+
+The requirements follow directly, and they are worth memorizing because the failure mode is silent:
+
+- A server implementing authorization **must verify every inbound request** and **must not treat possession of a state handle as authentication**. A handle is a name, not a credential.
+- Handles **should be non-deterministic**, drawn from a secure random number generator.
+- Handles **should be bound server-side to the authenticated user**, for example by keying state as `<user_id>:<handle>` where the user ID derives from the verified token rather than from anything the client sends.
+
+The reason this matters more than it sounds: in the stateful era the session itself carried identity, so a sloppy server accidentally got some isolation for free. Statelessly, nothing is free. Every request must re-establish who is asking before the handle means anything.
+
+**How bad is the field today?** The first large-scale dynamic audit of internet-facing MCP servers (arXiv 2608.00150, July 31, 2026) discovered over 21,000 publicly reachable instances, confirmed 640 as production, and dynamically tested 414 of them. It found **91.8% had no OAuth authentication at all**, and 687 tool instances exposed uncontrolled shell execution. Treat any MCP server reachable from the public internet as needing an authorization review before it needs a feature.
 
 **Defense-in-Depth Checklist for Production MCP:**
 

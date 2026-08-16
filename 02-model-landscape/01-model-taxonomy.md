@@ -1,14 +1,16 @@
 # Model Taxonomy
 
-This chapter provides a comprehensive guide to the model landscape as of **July 2026**, covering model families, capabilities, and selection criteria for production systems.
+This chapter provides a comprehensive guide to the model landscape as of **August 2026**, covering model families, capabilities, and selection criteria for production systems.
 
-> **Last verified: July 31, 2026.** The model landscape evolves rapidly. Always cross-check with provider pricing pages and release notes.
+> **Last verified: August 15, 2026.** The model landscape evolves rapidly. Always cross-check with provider pricing pages and release notes.
+>
+> **August 2026 headline:** Most of the month's releases were post-training refreshes or derivatives rather than new pretraining runs, and no US frontier lab shipped a new flagship base model. The action moved to prices, licenses, and access control. The clear exception is Alibaba's Qwen3.8-Max, a genuinely new 2.4T base whose weights landed August 12. **Claude Sonnet 5's introductory $2/$10 per 1M became the permanent price on August 10**, and the scheduled September 1 rise to $3/$15 was canceled, making Sonnet 5 permanently cheaper than the Sonnet 4.6 it replaced. Running the other way, **DeepSeek raises V4 prices 3x to 12x effective August 16 at 16:00 UTC**, moving to peak and off-peak billing (off-peak is exactly half peak, and peak covers only 01:00-04:00 and 06:00-10:00 UTC). That ends its run as the unambiguous cheap option. **OpenAI shipped GPT-5.6-Cyber** (August 10, $12.50/$75 per 1M) behind a new two-tier Daybreak Blue and Daybreak Red access program, the most concrete production example yet of capability-tiered gating. **Google released Gemini 3.7 Flash** (August 13) at half price through year-end, and **SpaceXAI released Grok 4.6** (August 12) with a 500K context. On open weights the licensing picture split: **Alibaba's Qwen3.8-Max** (August 12, 2.4T/95B active) shipped under a bespoke commercially gated license while its **Qwen3.8-27B** sibling (August 14) shipped plain Apache 2.0, **Meta returned to open weights with Muse Glimmer** (August 10, 30B, Apache 2.0), and **Z.ai withheld GLM-5.3's weights** pending safety evaluation after cyber capability grew faster than expected. **Claude Opus 4.1 retired on August 5**, closing out the last $15/$75 Opus tier. Benchmark figures throughout this section are largely vendor-reported; confirm on independent leaderboards.
 >
 > **July 2026 headline:** Anthropic shipped a full generation refresh: **Claude Sonnet 5** (June 30, `claude-sonnet-5`, new default everywhere, introductory $2/$10 per 1M through August 31 then $3/$15) and **Claude Opus 5** (July 24, `claude-opus-5`, unchanged $5/$25 with an optional Fast mode at $10/$50 about 2.5x faster). **Claude Fable 5 was restored globally July 1** after the export-control suspension, with a new jailbreak-specific cybersecurity classifier; Mythos 5 returned only to roughly 100 US critical-infrastructure organizations via Project Glasswing. **GPT-5.6 (Sol, Terra, Luna) reached general availability July 9**, and on July 30 OpenAI cut Luna 80% to $0.20/$1.20 and Terra 20% to $2/$12 (Sol stays $5/$30). The open-weight frontier had its strongest month ever: **Moonshot Kimi K3** (July 16, weights July 27) is the largest open-weight model to date at 2.8T total / 104B active with a 1M context, and **Thinking Machines Lab** debuted **Inkling** (July 15, 975B / 41B active, open weights), the leading US open-weights model. Google shipped **Gemini 3.6 Flash**, **3.5 Flash-Lite**, and a government-gated **3.5 Flash Cyber** (July 21) while delaying Gemini 3.5 Pro. **Meta Muse Spark 1.1** (July 9) arrived with Meta's first paid self-serve model API ($1.25/$4.25 per 1M). Black Forest Labs announced **FLUX 3** (July 23), a unified image, video, audio, and action model, in gated early access. Benchmark figures across these launches are largely vendor-reported; confirm on independent leaderboards.
 >
 > **June 2026 headline:** Anthropic released **Claude Fable 5** (June 9, `claude-fable-5`, $10/$50 per 1M, 1M context), its most capable widely released model: a Mythos-class model made safe for general availability, with an Opus 4.8 fallback safeguard on sensitive topics. **Claude Mythos 5** ships the same day as the unrestricted variant for Project Glasswing partners, succeeding Mythos Preview at less than half its price.
 >
-> **June 10-26 update:** A dense second wave of June launches followed. **Google DeepMind DiffusionGemma** (June 10, Apache 2.0) is Google DeepMind's first open-weight text-diffusion model: a 26B Mixture-of-Experts (~4B active) that denoises blocks of tokens in parallel for roughly 4x faster generation on a single H100, trading some quality versus standard Gemma 4. **Gemini 3.5 Live Translate** (June 9, built on Gemini 3 Pro) added real-time speech-to-speech translation across 70+ languages in public preview via the Gemini Live API and AI Studio. **Cohere North Mini Code 1.0** (June 9, Apache 2.0) is Cohere's first open coding model, a 30B / 3B-active MoE that runs on one H100. **Moonshot Kimi K2.7 Code** (June 12, Modified MIT) tunes K2.6 for long-horizon software work (1T / 32B-active MoE, roughly 30% fewer thinking tokens). **Z.ai GLM-5.2** (coding-plan access June 13, open weights under MIT June 16-17) is a ~753B / 40B-active MoE with a 1M context that reports SWE-Bench Pro 62.1, ahead of GPT-5.5 on that benchmark, at roughly $1.40 / $4.40 per 1M. **xAI Grok Imagine Video 1.5** reached general availability June 16 (image-to-video with synchronized audio, $0.080 per second of video), and **Grok 4.3** arrived on Amazon Bedrock June 15 ($1.25 / $2.50 per 1M, xAI's first model there). Alibaba's official Qwen Cloud changelog lists a June snapshot adding vision to **Qwen 3.7-Max** (text-only at its May launch), though some independent coverage attributes that vision update to Qwen 3.7-Plus instead, so verify before relying on it. Separately, on June 12 Anthropic suspended access to Claude Fable 5 and Claude Mythos 5 following a US export-control directive, with Mythos 5 later cleared for a limited set of US institutions. Then on June 26, OpenAI previewed **GPT-5.6** (Sol, Terra, and Luna), its next-generation line, in a limited release to a small set of US-government-approved partners over dual-use cybersecurity concerns, echoing the Anthropic restriction; Sol claims a new Terminal-Bench 2.1 record and Terra targets GPT-5.5-level quality at about half the cost. Coding scores here are largely vendor-reported; confirm on independent leaderboards.
+> **June 10-26 update:** A dense second wave of June launches followed. **Google DeepMind DiffusionGemma** (June 10, Apache 2.0) is Google DeepMind's first open-weight text-diffusion model: a 26B Mixture-of-Experts (~4B active) that denoises blocks of tokens in parallel for roughly 4x faster generation on a single H100, trading some quality versus standard Gemma 4. **Gemini 3.5 Live Translate** (June 9, built on Gemini 3 Pro) added real-time speech-to-speech translation across 70+ languages in public preview via the Gemini Live API and AI Studio. **Cohere North Mini Code 1.0** (June 9, Apache 2.0) is Cohere's first open coding model, a 30B / 3B-active MoE that runs on one H100. **Moonshot Kimi K2.7 Code** (June 12, Modified MIT) tunes K2.6 for long-horizon software work (1T / 32B-active MoE, roughly 30% fewer thinking tokens). **Z.ai GLM-5.2** (coding-plan access June 13, open weights under MIT June 16-17) is a 744B / 40B-active MoE with a 1M context that reports SWE-Bench Pro 62.1, ahead of GPT-5.5 on that benchmark, at roughly $1.40 / $4.40 per 1M. **xAI Grok Imagine Video 1.5** reached general availability June 16 (image-to-video with synchronized audio, $0.080 per second of video), and **Grok 4.3** arrived on Amazon Bedrock June 15 ($1.25 / $2.50 per 1M, xAI's first model there). Alibaba's official Qwen Cloud changelog lists a June snapshot adding vision to **Qwen 3.7-Max** (text-only at its May launch), though some independent coverage attributes that vision update to Qwen 3.7-Plus instead, so verify before relying on it. Separately, on June 12 Anthropic suspended access to Claude Fable 5 and Claude Mythos 5 following a US export-control directive, with Mythos 5 later cleared for a limited set of US institutions. Then on June 26, OpenAI previewed **GPT-5.6** (Sol, Terra, and Luna), its next-generation line, in a limited release to a small set of US-government-approved partners over dual-use cybersecurity concerns, echoing the Anthropic restriction; Sol claims a new Terminal-Bench 2.1 record and Terra targets GPT-5.5-level quality at about half the cost. Coding scores here are largely vendor-reported; confirm on independent leaderboards.
 >
 > **May 2026 recap:** Anthropic Claude Opus 4.8 (May 28, same $5/$25 price as Opus 4.7; Dynamic Workflows research preview with hundreds of parallel subagents; fast mode at $10/$50 is 3x cheaper than the Opus 4.7 fast mode); OpenAI GPT-5.5 (April 23) and GPT-5.5 Instant (May 5, default in ChatGPT); Claude Opus 4.7 (April 16, GA on Bedrock/Vertex/Foundry); Google Gemma 4 (April 2, Apache 2.0) and Gemini 3.2 Flash (quiet rollout May 5); DeepSeek V4 Pro and V4 Flash (April 24; 75% V4 Pro discount made **permanent** May 22, new list price $0.435/$0.87 per 1M from June 1); Moonshot Kimi K2.6 (April 20, 1T MoE / 32B active); Alibaba Qwen 3.6 Plus / 3.6-35B-A3B / 3.6 Max-Preview; Mistral Medium 3.5 (April 29, unified chat/reasoning/coding/vision); Meta Muse Spark (April 8, first closed-weight Meta model); Llama 4 Behemoth release paused through fall 2026 amid capability concerns. SWE-bench Verified published leaders before the Fable 5 launch: Claude Mythos Preview 93.9%, GPT-5.5 88.7%, Claude Opus 4.8 88.6%; ARC-AGI-2 leader: GPT-5.5 at 85.0%. Anthropic describes Fable 5 as state of the art on nearly all tested benchmarks; standard numeric scores were not in the launch post, so verify on the leaderboards.
 
@@ -60,7 +62,7 @@ This chapter provides a comprehensive guide to the model landscape as of **July 
 | Context Window | 1M tokens (default and max; 128K max output) |
 | Input / Output Cost | $5.00 / $25.00 per 1M (unchanged from Opus 4.8) |
 | Fast mode | $10.00 / $50.00 per 1M, about 2.5x faster |
-| Benchmarks | Frontier-Bench v0.1 (Terminal-Bench successor): 43.3% at max effort vs GPT-5.6 Sol's 34.4%, Fable 5's 33.7%, and Opus 4.8's 18.7%. Within 0.5% of Fable 5 on CursorBench 3.2 at about half the cost per task; roughly 3x the next-best model on ARC-AGI 3. Vendor-reported. |
+| Benchmarks | Anthropic's launch post, reporting the pre-release benchmark it called Frontier-Bench v0.1 (since renamed Terminal-Bench 3.0): 43.3% at max effort vs GPT-5.6 Sol's 34.4%, Fable 5's 33.7%, and Opus 4.8's 18.7%. Within 0.5% of Fable 5 on CursorBench 3.2 at about half the cost per task; roughly 3x the next-best model on ARC-AGI 3. Vendor-reported. |
 | Released | July 24, 2026 (Claude API, Claude Code, Claude Cowork; new default on Claude Max) |
 
 **What it is:** The Opus line's generational successor at unchanged pricing, aimed at long-horizon agentic coding and computer use. Beta features include mid-conversation tool changes and automatic fallback routing. The dual-price Fast mode continues the pattern Opus 4.8 introduced: one model, two latency tiers.
@@ -73,12 +75,13 @@ This chapter provides a comprehensive guide to the model landscape as of **July 
 |-----------|-------|
 | Model ID | `claude-sonnet-5` |
 | Context Window | 1M tokens per third-party coverage (not stated in the launch post) |
-| Input / Output Cost | Introductory $2.00 / $10.00 per 1M through August 31, 2026, then $3.00 / $15.00 |
+| Input / Output Cost | $2.00 / $10.00 per 1M (permanent since August 10, 2026) |
+| Cache / Batch | Cache write $2.50 per 1M (5 min) or $4.00 (1 hr); cache hit $0.20; Batch API $1.00 / $5.00 |
 | Positioning | The most agentic Sonnet yet: planning, browser and terminal tool use, autonomous operation approaching Opus 4.8 at lower cost |
 | Safety posture | Cyber safeguards on by default; deliberately reduced cybersecurity capability relative to Opus-class models |
 | Released | June 30, 2026 (default model across consumer and developer products same day) |
 
-**What it is:** The new production workhorse, replacing Sonnet 4.6 as the default. The launch-window pricing is a dated fact: any cost model built on $2/$10 must revisit after August 31.
+**What it is:** The new production workhorse, replacing Sonnet 4.6 as the default. On August 10, 2026 Anthropic made the introductory $2/$10 rate permanent and canceled the September 1 increase to $3/$15, so Sonnet 5 is permanently cheaper than the Sonnet 4.6 it succeeds (still $3/$15). Cost models built on the reversion assumption should be revised down.
 
 **Best for:** Production agent fleets, coding at scale, and the default tier in cost-aware routing stacks.
 
@@ -147,7 +150,10 @@ This chapter provides a comprehensive guide to the model landscape as of **July 
 - **Effort-control toggle** in `claude.ai` and Cowork lets users tune reasoning depth per turn.
 - **Expanded Claude Code rate limits**.
 
-**Considerations:** Tokenizer is the same one introduced in Opus 4.7 (up to 35% more tokens than the pre-4.7 tokenizer for the same fixed text). GPT-5.5 still holds the SWE-Bench Verified leaderboard at 88.7% and leads Terminal-Bench 2.1 at 78.2%. GPQA Diamond slipped 0.6 pts versus Opus 4.7. Anthropic's tokenizer change means token counts and bills for the same text are not directly comparable to pre-4.7 models. There is **no Claude Sonnet 4.8 release** as of May 29, 2026; Sonnet 4.6 remains the production workhorse.
+**Considerations:** Tokenizer is the same one introduced in Opus 4.7 (up to 35% more tokens than the pre-4.7 tokenizer for the same fixed text). GPT-5.5 still holds the SWE-Bench Verified leaderboard at 88.7% and leads Terminal-Bench 2.1 at 78.2%. GPQA Diamond slipped 0.6 pts versus Opus 4.7. Anthropic's tokenizer change means token counts and bills for the same text are not directly comparable to pre-4.7 models. There was no Claude Sonnet 4.8; the line jumped to **Claude Sonnet 5** on June 30, 2026, which replaced Sonnet 4.6 as the production workhorse.
+
+> [!NOTE]
+> **Retired August 5, 2026:** `claude-opus-4-1-20250805` was removed from the Claude API, closing out the last $15/$75 per 1M Opus tier. Every first-party Anthropic Opus SKU is now $5/$25 (or $10/$50 in Fast mode). The model remains available on Amazon Bedrock and Google Cloud, which set their own retirement schedules, so code pinned to that ID fails on the first-party API while still working on the partner clouds.
 
 ### Claude Opus 4.7 (Anthropic)
 
@@ -264,6 +270,21 @@ This chapter provides a comprehensive guide to the model landscape as of **July 
 
 **Best for:** Sol for frontier agentic work and cybersecurity-adjacent coding; Terra as the GPT-5.5-class production default at roughly half GPT-5.5's price; Luna for high-volume classification, extraction, and routing tiers.
 
+### GPT-5.6-Cyber (OpenAI) - August 2026 NEW (restricted)
+
+| Attribute | Value |
+|-----------|-------|
+| Model ID | `gpt-5.6-cyber` |
+| Context Window | 400K total (272K max input, 128K max output) |
+| Input / Output Cost | $12.50 / $75.00 per 1M; cached input $1.25 |
+| Access | Daybreak Red tier only, with identity verification, legal attestations, and approved use cases. Responses API only. Hardware security keys become mandatory on individual Daybreak accounts from September 1, 2026 |
+| Refusal posture | Trained for a lower refusal rate on dual-use security work: 95.0% completion on OpenAI's internal Advanced Cybersecurity Completion Rate eval versus 1.5% for GPT-5.6 Sol |
+| Released | August 10, 2026 (the Daybreak Blue and Red tier split appears in the API changelog dated August 7) |
+
+**What it is:** A cybersecurity model built on GPT-5.6 Sol, shipped alongside a split of the Daybreak program into two tiers. **Daybreak Blue** gives approved defenders access to general-purpose frontier models for vulnerability discovery, secure code review, detection engineering, and incident response. **Daybreak Red** is separately approved and gates `gpt-5.6-cyber` for vulnerability reproduction, exploit validation, penetration testing, and red teaming.
+
+**Why it matters architecturally:** This is the clearest production instance of capability-tiered gating to date. A model that is deliberately *more* permissive than the frontier default, priced at 2.5x Sol, restricted to a single API surface, and fenced behind identity verification plus mandatory hardware 2FA is a reference design for how labs are operationalizing dual-use access. Compare with Anthropic's Fable 5 and Mythos 5 split and Google's Gemini 3.5 Flash Cyber: three labs, three variations on the same tiering pattern.
+
 ### GPT-5.5 (OpenAI) - May 2026 NEW
 
 | Attribute | Value |
@@ -358,6 +379,36 @@ This chapter provides a comprehensive guide to the model landscape as of **July 
 | Released | April 14, 2026 |
 
 **Best for:** Robotics applications requiring vision-language grounding for physical actions. Available via Gemini API and AI Studio.
+
+### Gemini 3.7 Flash (Google) - August 2026 NEW
+
+| Attribute | Value |
+|-----------|-------|
+| Model ID | `gemini-3.7-flash` |
+| Context Window | 1,048,576 tokens in / 65,536 out |
+| Input / Output Cost | $0.75 / $3.75 per 1M through December 31, 2026, then $1.50 / $7.50. Context caching $0.075 per 1M; Batch $0.375 / $1.875 |
+| Multimodal | Text, image, audio, video; first Gemini model with agentic video processing on by default |
+| Knowledge cutoff | March 2026 |
+| Released | August 13, 2026 (GA) |
+
+**What it is:** Google's workhorse tier, built on Gemini 3.6 Flash with what the model card describes as algorithmic improvements to the reasoning foundation rather than a new pretraining run. Customizable thinking configurations trade quality against cost and latency per request. Google-reported gains over 3.6 Flash include FrontierCode 1.1 Main 43.6% versus 34.4% and WebDev Arena Elo 1588 versus 1538.
+
+**Considerations:** The half-price introductory rate expires December 31, 2026 and then doubles, so run cost models against the January 2027 numbers before committing to volume. Gemini 3.5 Pro still has not shipped as of mid-August; `gemini-3.1-pro-preview` remains Google's top Pro-tier entry.
+
+### Grok 4.6 (SpaceXAI) - August 2026 NEW
+
+| Attribute | Value |
+|-----------|-------|
+| Model ID | `grok-4.6` |
+| Context Window | 500K tokens |
+| Input / Output Cost | $2.00 / $6.00 per 1M below a 200K prompt; $4.00 / $12.00 at or above 200K. Cached input $0.50 |
+| Reasoning | Effort settings low, medium, high (default), xhigh |
+| Knowledge cutoff | February 1, 2026 |
+| Released | August 12, 2026 |
+
+**What it is:** SpaceXAI's frontier model, focused on long-running agents and interactive visual work. Artificial Analysis Intelligence Index 61, up from 56 for Grok 4.5 High.
+
+**Two traps worth knowing.** The higher long-prompt rate applies to *all* tokens in the request once the prompt reaches 200K, not just the tokens past the threshold. And cached input got more expensive than Grok 4.5 ($0.50 versus $0.30 per 1M), so cache-heavy agent loops do not automatically get cheaper on the upgrade. Note the vendor name: xAI completed a rebrand to SpaceXAI, so current docs and release notes use the new name.
 
 ### Grok 4 (xAI)
 
@@ -461,6 +512,8 @@ While frontier models lead on benchmarks, many enterprise systems rely on **batt
 
 | Model | Parameters | License | Notes |
 |-------|------------|---------|-------|
+| **Qwen3.8-Max** | 2.4T total / 95B active MoE | Qwen3.8-Max License (gated) | August 12, 2026. 262K context native, extensible to ~1,010,000. Open weights under a bespoke license, not Apache: attribution required above 100M MAU or $20M monthly revenue, and a separate paid license is required for Model-as-a-Service or AI-assistant businesses above $50M aggregate revenue. The open checkpoint is text-input-only; the API version is multimodal. |
+| **Qwen3.8-27B** | 27B dense | Apache 2.0 | August 14, 2026. The more permissive *and* more modality-complete artifact: accepts image and video input where the open Max checkpoint does not. 262K context, extensible to ~1M. Dense rather than MoE, which makes it the practical single-GPU option. |
 | **Qwen 3.6 Max-Preview** | ~1T MoE | Commercial preview | Released ~April 20–27, 2026. 262K context. Tops six coding benchmarks per Alibaba. |
 | **Qwen 3.6-Plus** | - | - | Released April 2, 2026. Enhanced coding. |
 | **Qwen 3.6-35B-A3B** | 35B / 3B active MoE | Apache 2.0 | Released April 16, 2026. Open-weight workhorse. |
@@ -493,7 +546,8 @@ While frontier models lead on benchmarks, many enterprise systems rely on **batt
 
 | Model | Parameters | Context | License | Notes |
 |-------|------------|---------|---------|-------|
-| **GLM-5.2** | ~753B total / ~40B active (MoE) | 1M | MIT | Coding-plan access June 13, 2026; open weights June 16-17. Built for long-horizon agentic coding and tool use. Reports SWE-Bench Pro 62.1 (ahead of GPT-5.5 at 58.6 on that benchmark) and a long-horizon coding score near the closed frontier; figures are vendor-reported. API roughly $1.40 / $4.40 per 1M; weights on Hugging Face. |
+| **GLM-5.3** | Post-trained on the same 744B / 40B-active base as GLM-5.2 | 1M | Weights withheld at launch | August 14, 2026 via the GLM Coding Plan. The entire gain comes from extended post-training rather than a new pretraining run, a useful datapoint on where capability now comes from. Z.ai says cyber capability grew faster than anticipated as post-training scaled, claims a CyberGym lead, and staged the open-weight release pending safety evaluation, targeting roughly two weeks out (around August 28, 2026). |
+| **GLM-5.2** | 744B total / 40B active (MoE) | 1M | MIT | Coding-plan access June 13, 2026; open weights June 16-17. Built for long-horizon agentic coding and tool use. Reports SWE-Bench Pro 62.1 (ahead of GPT-5.5 at 58.6 on that benchmark) and a long-horizon coding score near the closed frontier; figures are vendor-reported. API roughly $1.40 / $4.40 per 1M; weights on Hugging Face. |
 
 **Best for:** Open-weight agentic coding and long-horizon tool use where a 1M context and a permissive license matter. Verify benchmark claims on independent leaderboards.
 
@@ -518,6 +572,38 @@ While frontier models lead on benchmarks, many enterprise systems rely on **batt
 
 **July 2026 update:** **Muse Spark 1.1** shipped July 9 alongside the public preview of the **Meta Model API**, Meta's first self-serve paid API: OpenAI-compatible, $1.25 / $4.25 per 1M, roughly a quarter of rival flagship rates. Vendor-reported benchmarks lead on scaled tool use (MCP Atlas 88.1) and professional tool use (JobBench 54.7). Meta charging for API access completes the pivot away from open-weight Llama; there is no Llama 5, and Behemoth remains shelved.
 
+**August 2026 update:** **Muse Glimmer** (August 10) is Meta's first open-weight release since Llama 4 and, at Apache 2.0, its most permissive license ever for an open model. It is a 30B dense multimodal model aimed at always-on local agent work (local coding agents, function calling, LLM-as-a-judge), with a 131,072-token context; quantized to 4-bit it fits under 20GB and runs on a single 24GB consumer GPU. **Muse Spark 1.2** and **Muse Code**, a terminal coding agent, shipped alongside it, notable for a `muse-spark-1.2-contributor` tier priced at $0.10 / $0.20 per 1M (against $1.25 / $4.25 standard) in exchange for permission to train on your prompts and completions. Data-for-discount as an explicit, published API tier is new, and worth a policy decision before anyone enables it.
+
+---
+
+### The August 2026 Open-Weight Licensing Split
+
+August was the month open weights stopped meaning one thing. Three postures now coexist, and the license is as much a design input as the benchmark:
+
+| Model | Released | Size | License posture | What the license actually does |
+|-------|----------|------|-----------------|-------------------------------|
+| **Qwen3.8-Max** (Alibaba) | Aug 12 | 2.4T / 95B active | Bespoke, commercially gated | Free use, modification, and resale, but attribution is required above 100M MAU or $20M monthly revenue, and a separate paid license is required to run a Model-as-a-Service or AI-assistant business above $50M aggregate revenue |
+| **Qwen3.8-27B** (Alibaba) | Aug 14 | 27B dense | Apache 2.0 | No conditions. The smaller sibling is both more permissive and more modality-complete than the flagship |
+| **Muse Glimmer** (Meta) | Aug 10 | 30B dense | Apache 2.0 | No conditions; Meta's most permissive open license to date |
+| **Tencent Hy3** | Global Aug 5 (model Jul 6) | 295B / 21B active | Apache 2.0 | Fully permissive with no geographic carve-outs, reversing the April preview's restrictive license that excluded the EU, UK, and South Korea |
+| **Ling-3.0-flash / tiny** (Ant Group) | Aug 5 / Aug 11 | 124B / 5.1B active; 7.9B / 1.3B active | MIT | No conditions |
+| **Nemotron 3.5 Lightning** (NVIDIA) | Aug 11 | 30B / 3B active | OpenMDW-1.1 | Linux Foundation license, free for commercial use |
+| **GLM-5.3** (Z.ai) | Aug 14 | 744B base | Weights withheld | Open release deliberately staged pending safety evaluation after cyber capability grew faster than expected; Z.ai gave a target of roughly two weeks (around August 28, 2026) |
+
+Two things follow for anyone building on open weights. First, **read the license before the model card**: a gated license can make a "open" flagship unusable for exactly the SaaS business you were planning, while its smaller sibling is unencumbered. Second, **withholding is now a legitimate outcome**: a lab can ship a model commercially and hold the weights on safety grounds. Z.ai did publish a target date, so treat it as a dated plan rather than an open-ended promise, and do not build a roadmap on weights that have not shipped.
+
+### Small and On-Device Models - August 2026
+
+| Model | Size | Context | License | Notes |
+|-------|------|---------|---------|-------|
+| **Ling-3.0-tiny** (Ant Group) | 7.9B / 1.3B active | 256K | MIT | Genuinely laptop-class agentic model: roughly 8.3 GiB peak memory at 8K context, 86-90 tok/s on an M4 Pro MacBook at FP8 |
+| **LFM2.5-2.6B** (Liquid AI) | 2.6B | 128K | Open weights | Built for on-device tool calling and multi-step planning rather than chat; under 2.5 GB memory, runs down to a Raspberry Pi |
+| **LFM2.5-VL-3B** (Liquid AI) | 3B | - | Open weights | On-device vision-language model for screen understanding and GUI grounding (August 12) |
+| **Shieldstral 1.0** (Mistral) | 3B | 32K | Apache 2.0 | Policy-adaptive **multimodal** safety classifier (text and image, 12 languages): moderation policies are supplied in natural language at inference time, so a policy change needs no retraining. Runs on one 16GB GPU |
+| **Muse Glimmer** (Meta) | 30B dense | 131K | Apache 2.0 | Under 20GB at 4-bit; targets always-on local agents |
+
+The pattern worth noting: the small-model tier stopped competing on chat quality and started competing on **tool calling, planning, and screen grounding**, which are the capabilities a local agent actually needs.
+
 ---
 
 ## Specialized Models
@@ -534,7 +620,7 @@ While frontier models lead on benchmarks, many enterprise systems rely on **batt
 | **Llama 4 Maverick** | Open-source coding | Open weights; competitive on coding benchmarks |
 | **Qwen 3.6 Coder / Qwen2.5-Coder-32B** | Self-hosted coding | Best price-to-performance for self-hosted IDEs |
 | **DeepSeek V4 Pro / R1-Distill-70B** | Open reasoning + code | Best open reasoning at 70B; V4 Pro is open-weight 1.6T/49B-active MoE |
-| **Z.ai GLM-5.2** | Open agentic coding | June 2026; ~753B / 40B-active MoE, 1M context, MIT; reports SWE-Bench Pro 62.1 ahead of GPT-5.5 on that benchmark (vendor-reported); about $1.40 / $4.40 per 1M |
+| **Z.ai GLM-5.2** | Open agentic coding | June 2026; 744B / 40B-active MoE, 1M context, MIT; reports SWE-Bench Pro 62.1 ahead of GPT-5.5 on that benchmark (vendor-reported); about $1.40 / $4.40 per 1M |
 | **Kimi K2.7 Code** | Open long-horizon coding | June 2026; 1T / 32B-active MoE, Modified MIT; tuned from K2.6 for software work with fewer thinking tokens |
 | **Cohere North Mini Code 1.0** | Open lightweight coding | June 2026; 30B / 3B-active MoE on a single H100, Apache 2.0; Cohere's first open coding model |
 

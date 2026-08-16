@@ -10,6 +10,10 @@ Quick reference for key terms used throughout this guide.
 
 **Agentic System** - LLM application that autonomously plans and executes multi-step tasks using tools.
 
+**Agent Plugins** - Vendor-neutral packaging format (1.0, August 2026) that bundles Agent Skills and MCP server declarations into one installable directory with a `plugin.json` manifest. Standardizes distribution of agent capability; deliberately keeps only skills and MCP servers portable, leaving client-specific parts in namespaced directories. See [Tool Use and MCP](07-agentic-systems/03-tool-use-and-mcp.md#agent-plugins).
+
+**Advisor / Executor** - Orchestration pattern where a cheaper executor model runs the agent loop and consults a stronger advisor model at decision points, passing the transcript and receiving a plan or correction. Often beats raising the executor's own reasoning effort at lower cost per task. See [PATTERNS.md](PATTERNS.md).
+
 **AI Control** - Safety approach that assumes a model may be misaligned and designs deployment protocols (monitoring, defer-on-critical-action, resampling, factored cognition) to stay safe even then. Distinct from alignment, which aims to make the model trustworthy in the first place. See [Research Radar](RESEARCH-RADAR.md).
 
 **AI Gateway** - A control-plane proxy between your apps and model providers (LiteLLM, OpenRouter, Portkey, Kong). Exposes one OpenAI-compatible API and centralizes routing, fallback, load balancing, rate-limit handling, virtual keys and budgets, caching, and observability. See [AI Gateways and Model Routing](11-infrastructure-and-mlops/03-ai-gateways-and-model-routing.md).
@@ -128,6 +132,8 @@ Quick reference for key terms used throughout this guide.
 
 **Harness (Scaffold) Variance** - The 10-20 point swing in benchmark scores produced by the same model weights under different prompts, tool access, reasoning effort, or agent scaffolds. Why provider self-reports are not comparable across labs, and only same-harness numbers can be compared. See [Benchmarks and Leaderboards](14-evaluation-and-observability/03-benchmarks-and-leaderboards.md).
 
+**Graph Engineering** - Designing an agent system as a topology of specialized nodes, routed edges, and a shared state object rather than tuning a single agent's loop. The successor vocabulary to loop engineering, surging from mid-2026. The key design axis is static topology (inspectable, testable, replayable) versus dynamic topology (adaptive, harder to reason about). See [Research Radar](RESEARCH-RADAR.md#14-graph-engineering-and-the-orchestration-consensus).
+
 **Harness Engineering** - Designing the deterministic driver code around an agent (context assembly, tool execution, budgets, stop conditions, durable state, observability) rather than tuning the model itself. The harness is the kernel; the model is the policy. See [Loop Engineering](07-agentic-systems/12-loop-engineering.md).
 
 **HNSW (Hierarchical Navigable Small World)** - Graph-based algorithm for approximate nearest neighbor search in vector databases.
@@ -173,6 +179,8 @@ Quick reference for key terms used throughout this guide.
 **LLM-as-Judge** - Using an LLM to evaluate outputs from another LLM.
 
 **Loop Engineering** - The discipline of designing and continuously improving the control loops that wrap an agent (the trigger, the inner reason-act-observe loop, a verification loop, event-driven invocation, and an eval-driven improvement loop) instead of hand-prompting the model each turn. See [Loop Engineering](07-agentic-systems/12-loop-engineering.md).
+
+**Managed Agents** - Provider-hosted agent runtimes that supply the harness (persistence, memory, skill loading, sandbox lifecycle, durable execution, identity scoping) so you supply only the agent logic. Became a named category in 2026 once the loop shape and the tool protocol both stabilized, making the layer commoditizable. See [Research Radar](RESEARCH-RADAR.md#14-graph-engineering-and-the-orchestration-consensus).
 
 **Loopmaxxing** - The anti-pattern of assuming that more iterations automatically solve a task. It fails on goals with no verifiable exit condition, so the loop never converges and spend runs away. The multi-step descendant of token-maxxing. See [Loop Engineering](07-agentic-systems/12-loop-engineering.md).
 
@@ -247,6 +255,8 @@ Quick reference for key terms used throughout this guide.
 **Speculative Decoding** - Using small draft model to propose tokens, verified by large model.
 
 **Speech-to-Speech (S2S)** - A voice-agent architecture where one multimodal model takes audio in and emits audio out directly, versus a cascaded STT to LLM to TTS pipeline. More natural and lower-latency, but less debuggable and controllable. See [Real-Time Voice Agents](18-voice-and-audio-agents/01-realtime-voice-agents.md).
+
+**State-Handle Hijacking** - Attack class named in the MCP 2026-07-28 specification. With protocol-level sessions removed, servers mint explicit state handles returned as ordinary tool arguments; an attacker who obtains or guesses a handle can read or modify another user's state. Mitigation: never treat a handle as authentication, use non-deterministic handles, and bind them server-side to the authenticated principal. See [Tool Use and MCP](07-agentic-systems/03-tool-use-and-mcp.md).
 
 **Structured Outputs** - OpenAI's (and Anthropic's tool-mode) capability to guarantee model output conforms to a provided JSON Schema. Stricter than legacy JSON mode.
 

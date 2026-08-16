@@ -8,6 +8,7 @@ The one-line version: **frameworks are how you ship this quarter; primitives are
 
 - [The Trigger: Why a Course Breaks on a Fresh Install](#the-trigger-why-a-course-breaks-on-a-fresh-install)
 - [What Actually Changed](#what-actually-changed)
+  - [The August 2026 Snapshot](#the-august-2026-snapshot)
 - [Why Courses and Tutorials Go Stale](#why-courses-and-tutorials-go-stale)
 - [Is This Tutorial Current? A 30-Second Check](#is-this-tutorial-current-a-30-second-check)
 - [Surviving Churn: Pin, Lock, Isolate](#surviving-churn-pin-lock-isolate)
@@ -41,6 +42,19 @@ This is not a LlamaIndex problem or a course-quality problem. It is the default 
 ---
 
 ## What Actually Changed
+
+### The August 2026 Snapshot
+
+Version churn does not only break tutorials; it also retires whole product surfaces. Four items from this window are worth putting on a calendar rather than discovering at runtime:
+
+| Change | Date | What it means |
+|---|---|---|
+| **OpenAI Assistants API sunset** | August 26, 2026 | Removed from the API after a twelve-month deprecation. Replacement is the Responses API plus the Conversations API, and there is **no automated migration** for Threads: assistants are rebuilt as Responses calls and threads recreated. Any tutorial, diagram, or sample still using Assistants, Threads, and Runs describes a dead API |
+| **OpenAI Evals Platform, Agent Builder, and Reusable Prompts shut down** | November 30, 2026 | Evals go read-only October 31. OpenAI points eval users at Promptfoo, a third-party open-source tool, and Agent Builder users at the Agents SDK. Read as OpenAI exiting hosted evals and visual agent building to consolidate on the SDK |
+| **Agents SDK default model change** | August 11, 2026 | The Python Agents SDK 0.20.0 changed its default model to a cheaper tier. A default-model change is a silent behavior change for anyone who never set one explicitly, which is exactly the class of churn that does not announce itself in your code |
+| **Observability consolidation** | August 13, 2026 | Dynatrace announced an agreement to acquire Arize AI for roughly $915M. Expect the open-source and vendor eval tooling landscape to keep consolidating; pick tools whose data you can export |
+
+The durable lesson is the same one this chapter makes about imports: **pin what you depend on, and subscribe to the deprecation feed of every vendor in your critical path**. The Assistants sunset was announced a full year ahead, which means the teams it breaks are the ones that never read the notice.
 
 Two re-architectures define the modern churn. Version numbers below are accurate as of June 2026; treat them as a snapshot, since they will keep moving.
 

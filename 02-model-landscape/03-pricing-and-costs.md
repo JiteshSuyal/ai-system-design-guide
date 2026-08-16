@@ -54,9 +54,13 @@ Committed (1-year): $2.00 / 1M input tokens (20% savings)
 
 ## Current API Pricing
 
-### May 2026 Pricing
+### August 2026 Pricing
 
-> **Last verified: June 10, 2026.** Prices change frequently. Always re-check: [OpenAI](https://developers.openai.com/api/docs/pricing), [Anthropic](https://platform.claude.com/docs/en/about-claude/pricing), [Google](https://ai.google.dev/gemini-api/docs/pricing), [xAI](https://docs.x.ai/developers/models), [DeepSeek](https://api-docs.deepseek.com/quick_start/pricing)
+> **Last verified: August 15, 2026.** Prices change frequently. Always re-check: [OpenAI](https://developers.openai.com/api/docs/pricing), [Anthropic](https://platform.claude.com/docs/en/about-claude/pricing), [Google](https://ai.google.dev/gemini-api/docs/pricing), [xAI](https://docs.x.ai/developers/models), [DeepSeek](https://api-docs.deepseek.com/quick_start/pricing)
+>
+> **August 2026 price moves (the two that matter most):** **Claude Sonnet 5's introductory $2 / $10 per 1M became permanent on August 10, 2026**, and the scheduled September 1 increase to $3 / $15 was canceled, so Sonnet 5 is now permanently cheaper than the Sonnet 4.6 it replaced. Going the other way, **DeepSeek raises V4 prices 3x to 12x effective August 16, 2026 at 16:00 UTC** and switched from flat rates to peak and off-peak billing, ending its run as the unambiguous cheap option: at peak, V4-Flash output ($1.32 per 1M) now costs more than GPT-5.6 Luna's $1.20. Also new: **GPT-5.6-Cyber** at $12.50 / $75 (August 10, restricted access), **Gemini 3.7 Flash** at a half-price $0.75 / $3.75 through December 31 2026, and **Grok 4.6** at $2 / $6 with a long-prompt tier that applies the higher rate to every token in the request once the prompt reaches 200K.
+>
+> **August 2026 retirements and sunsets:** Claude Opus 4.1 retired from the Claude API on **August 5, 2026** (the last $15 / $75 Opus tier; still live on Bedrock and Google Cloud on their own schedules). The OpenAI **Assistants API sunsets August 26, 2026**, replaced by the Responses API plus the Conversations API, with no automated migration for Threads. OpenAI is also shutting down its **Evals Platform, Agent Builder, and Reusable Prompts on November 30, 2026** (evals go read-only October 31; OpenAI points eval users to the third-party Promptfoo). Anthropic's legacy Workbench and experimental prompt-tools APIs shut down **August 17, 2026**.
 >
 > **Deprecations effective in 2026:** OpenAI retired GPT-4o, GPT-4.1, GPT-4.1-mini, o4-mini from ChatGPT on Feb 13, 2026; gpt-5.2-chat-latest and gpt-5.3-chat-latest deprecated May 8, 2026; Realtime API Beta removed May 12, 2026; Sora app shut down April 26, 2026 (API EOL Sep 24, 2026). Anthropic retires Claude Sonnet 4 and Claude Opus 4 on June 15, 2026, and Claude Opus 4.1 on August 5, 2026. Google Vertex retired `gemini-3-pro-preview` Mar 26, 2026; Project Mariner shut down May 4, 2026. Gemini 2.5 Pro/Flash deprecated June 17, 2026.
 >
@@ -65,7 +69,11 @@ Committed (1-year): $2.00 / 1M input tokens (20% savings)
 #### OpenAI (GPT-5.x Generation)
 | Model | Input / 1M | Output / 1M | Notes |
 |-------|------------|-------------|-------|
-| **GPT-5.5** ⭐ NEW | $5.00 | $30.00 | Released April 23, 2026. 1M context. New class of multimodal flagship. |
+| **GPT-5.6 Sol** ⭐ NEW | $5.00 | $30.00 | GA July 9, 2026. Flagship of the three-tier GPT-5.6 line. 1M context, 128K max output. |
+| **GPT-5.6 Terra** ⭐ NEW | $2.00 | $12.00 | Cut 20% on July 30, 2026 from $2.50 / $15. GPT-5.5-class quality at roughly half the price; the general production default. |
+| **GPT-5.6 Luna** ⭐ NEW | $0.20 | $1.20 | Cut 80% on July 30, 2026 from $1 / $6. Priced against open-weight competition; the volume tier for classification, extraction, and routing. |
+| **GPT-5.6-Cyber** ⭐ NEW | $12.50 | $75.00 | August 10, 2026. Cached input $1.25. 400K context. Daybreak Red tier only: identity verification, legal attestations, approved use cases, Responses API only. Hardware security keys mandatory on individual accounts from September 1, 2026. |
+| **GPT-5.5** | $5.00 | $30.00 | Released April 23, 2026. 1M context. New class of multimodal flagship. |
 | **GPT-5.5 Instant** ⭐ NEW | check latest | check latest | Default in ChatGPT and `chat-latest` since May 5, 2026. 52.5% fewer hallucinations on high-stakes prompts. |
 | **GPT-Realtime-2** ⭐ NEW | $32.00 (audio) | $64.00 (audio) | Released May 7, 2026. GPT-5-class realtime voice. |
 | **GPT-Realtime-Translate** ⭐ NEW | (audio pricing) | (audio pricing) | 70+ input → 13 output languages. |
@@ -79,21 +87,24 @@ Committed (1-year): $2.00 / 1M input tokens (20% savings)
 #### Anthropic (Claude Fable + 4.x Generation)
 | Model | Input / 1M | Output / 1M | Context | Notes |
 |-------|------------|-------------|---------|-------|
+| **Claude Opus 5** ⭐ NEW | $5.00 | $25.00 | 1M | Released July 24, 2026 (`claude-opus-5`). Unchanged from Opus 4.8. Optional Fast mode at $10 / $50 per 1M, about 2.5x faster. New default on Claude Max. |
+| **Claude Sonnet 5** ⭐ NEW | $2.00 | $10.00 | 1M | Released June 30, 2026 (`claude-sonnet-5`), default across products. **Introductory pricing made permanent August 10, 2026**; the scheduled September 1 rise to $3 / $15 was canceled. Cache write $2.50 (5 min) / $4.00 (1 hr); cache hit $0.20; Batch $1 / $5. Permanently cheaper than Sonnet 4.6. |
 | **Claude Fable 5** ⭐ NEW | $10.00 | $50.00 | 1M | Released June 9, 2026 (`claude-fable-5`) on Claude API, Claude Platform on AWS, Bedrock, Vertex AI, Microsoft Foundry. Most capable widely released Anthropic model (Mythos-class with safeguards; sensitive queries fall back to Opus 4.8 in under 5% of sessions). Adaptive thinking always on; 128K max output; 30-day data retention applies. |
 | **Claude Mythos 5** ⭐ NEW | $10.00 | $50.00 | 1M | Same underlying model as Fable 5 with safeguards lifted in some areas. Limited availability: Project Glasswing partners and select biology researchers. Succeeds Mythos Preview at less than half its price. |
 | **Claude Opus 4.8** | $5.00 | $25.00 | 1M | Released May 28, 2026 on API, Bedrock, Vertex AI. Dynamic Workflows research preview with parallel subagents. Optional fast mode at $10 / $50 per 1M (about 2.5x faster, 3x cheaper than the Opus 4.7 fast mode). SWE-bench Verified 88.6%; SWE-Bench Pro 69.2%; OSWorld-Verified 82.3%. |
-| **Claude Opus 4.7** | $5.00 | $25.00 | 1M | Released April 16, 2026 on API, Bedrock, Vertex, Microsoft Foundry. Higher-resolution vision, improved SWE. Fast mode: $30 / $150 per 1M. |
+| **Claude Opus 4.7** | $5.00 | $25.00 | 1M | Released April 16, 2026 on API, Bedrock, Vertex, Microsoft Foundry. Higher-resolution vision, improved SWE. Fast mode is no longer offered on this model: a fast-speed request returns an error. |
 | **Claude Opus 4.6** | $5.00 | $25.00 | 1M | 128K max output; adaptive thinking at standard rates. |
-| **Claude Sonnet 4.6** | $3.00 | $15.00 | 1M | Covers most Opus-level tasks at lower cost. **Still no Sonnet 4.8 as of June 10, 2026.** |
+| **Claude Sonnet 4.6** | $3.00 | $15.00 | 1M | Superseded by Claude Sonnet 5 (June 30, 2026), which is both newer and cheaper at $2/$10. |
 | **Claude Haiku 4.5** | $1.00 | $5.00 | 200K | Fastest Anthropic model; cache hit input $0.10 / 1M. |
 | **Claude Mythos Preview** | n/a | n/a | - | Restricted research preview (~11 Glasswing partners); succeeded by Claude Mythos 5 on June 9, 2026. |
 
 > [!NOTE]
-> **Claude 1M context at standard pricing**: Fable 5, Opus 4.8, Opus 4.7, Opus 4.6, and Sonnet 4.6 include the full 1M token context window at standard rates with no premium tier for long context. Batch API offers a 50% discount. Cache hits cost 10% of the standard input price. Fast mode pricing on Opus 4.8 ($10 / $50 per 1M) and Opus 4.7 / 4.6 ($30 / $150 per 1M) stacks with caching multipliers but is not available on the Batch API or Claude Platform on AWS. No Fable-tier fast mode at launch.
+> **Claude 1M context at standard pricing**: Fable 5, Opus 4.8, Opus 4.7, Opus 4.6, and Sonnet 4.6 include the full 1M token context window at standard rates with no premium tier for long context. Batch API offers a 50% discount. Cache hits cost 10% of the standard input price. Fast mode is available on Opus 5 and Opus 4.8 at $10 / $50 per 1M and is no longer offered on Opus 4.7 (which errors) or Opus 4.6 (which runs at standard speed and standard rates); the historical Opus 4.7 fast tier was $30 / $150. Fast-mode pricing stacks with caching multipliers but is not available on the Batch API or Claude Platform on AWS. No Fable-tier fast mode at launch.
 
 #### Google (Gemini 3.x Generation)
 | Model | Input / 1M | Output / 1M | Context | Notes |
 |-------|------------|-------------|---------|-------|
+| **Gemini 3.7 Flash** ⭐ NEW | $0.75 | $3.75 | 1M | GA August 13, 2026. Half-price introductory rate through **December 31, 2026**, then $1.50 / $7.50. Context caching $0.075/1M; Batch $0.375 / $1.875. Model cards and cost plans should use the January 2027 numbers for anything long-lived. |
 | **Gemini 3.1 Pro** | $2.00 | $12.00 | 1M | 200K+ context: $4.00/$18.00 |
 | **Gemini 3.1 Flash** | $0.10 | $3.00 | 1M | Best price/performance; high-volume |
 | **Gemini 2.5 Flash-Lite** | $0.10 | $0.40 | 1M | Deprecated June 2026 |
@@ -104,16 +115,21 @@ Committed (1-year): $2.00 / 1M input tokens (20% savings)
 #### xAI (Grok)
 | Model | Input / 1M | Output / 1M | Context | Notes |
 |-------|------------|-------------|---------|-------|
+| **Grok 4.6** ⭐ NEW | $2.00 | $6.00 | 500K | Released August 12, 2026. Cached input $0.50 (up from $0.30 on Grok 4.5, so cache-heavy loops do not get cheaper). At or above a 200K prompt the rate doubles to $4 / $12 **for every token in the request**, not just the excess. Fast variant is 2x. |
 | **Grok 4** | $3.00 | $15.00 | 256K | Native tool use; real-time search |
 | **Grok 4.1 Fast** | $0.20 | $0.50 | 2M | High-volume, low-cost |
 | **Grok 3 mini** | check latest | check latest | - | Faster, less accurate |
 
-#### Open-Weight Models via API (May 2026)
+#### Open-Weight and Value-Tier Models via API (August 2026)
 | Model | Input / 1M | Output / 1M | Context | Provider Examples |
 |-------|------------|-------------|---------|-------------------|
+| **DeepSeek V4 Pro** ⭐ REPRICING AUG 16 | $1.32 peak / $0.66 off-peak | $3.96 peak / $1.98 off-peak | 1M | **Effective August 16, 2026 at 16:00 UTC**, DeepSeek moved to peak/off-peak billing and raised prices 3x to 12x depending on token type (cache-hit input went from $0.003625 to $0.044, a 12.1x rise). Off-peak is exactly half peak. GA as build 0813 on August 13 with MIT weights. |
+| **DeepSeek V4 Flash** ⭐ REPRICING AUG 16 | $0.44 peak / $0.22 off-peak | $1.32 peak / $0.66 off-peak | 1M | Same August 16 repricing (was $0.14 / $0.28). GA as build 0731 on July 31 with MIT weights. At peak, output now exceeds GPT-5.6 Luna's $1.20 per 1M. |
+| **Qwen3.8-Max** ⭐ NEW | check latest | check latest | 262K (to ~1M) | Alibaba API; open weights August 12 under a commercially gated license. |
+| **Tencent Hy3** ⭐ NEW | ~$0.13 | ~$0.53 | 256K | Via OpenRouter. 295B / 21B-active MoE, Apache 2.0, global from August 5, 2026. Among the cheapest frontier-adjacent rates available. |
+| **MAI-Code-1.1-Flash** ⭐ NEW | $0.20 | $1.20 | check latest | Microsoft, August 11, 2026. A 73% list-price cut versus MAI-Code-1-Flash; shipped into GitHub Copilot. |
+| **Muse Spark 1.2** ⭐ NEW | $1.25 | $4.25 | 1M | Meta Model API. A `muse-spark-1.2-contributor` tier costs $0.10 / $0.20 in exchange for permission to train on your prompts and completions: check policy before enabling. |
 | **DeepSeek-V3.2** | $0.28 | $0.42 | 128K | DeepSeek API. 98% cache-hit discount. Effective rates can drop 10–30× via routing. |
-| **DeepSeek V4 Pro** ⭐ NEW | $0.435 | $0.87 | 1M | DeepSeek API. 75% promotional discount made **permanent**: from June 1, 2026 the new list price is 25% of the original ($1.74 / $3.48). Cache-hit input: $0.003625/M. ~27% compute / 10% memory of V3.2 at 1M tokens. |
-| **DeepSeek V4 Flash** ⭐ NEW | $0.14 | $0.28 | 1M | DeepSeek API. Cache-hit input: $0.0028/M (98% discount). 13B-active MoE. Currently the cheapest frontier-class 1M-context API. |
 | **Mistral Medium 3.5** ⭐ NEW | $1.50 | check latest | 256K | Mistral API. Unified chat/reasoning/coding/vision; 77.6% SWE-Bench Verified. |
 | **Kimi K2.6** ⭐ NEW | check latest | check latest | - | Moonshot API. 1T MoE / 32B active; agent swarm to 300 sub-agents. |
 | **Qwen 3.6-35B-A3B** ⭐ NEW | check latest | check latest | - | Apache 2.0 weights; self-host or via API providers. |
@@ -126,7 +142,7 @@ Committed (1-year): $2.00 / 1M input tokens (20% savings)
 | **Qwen2.5-Coder-32B** | ~$0.50 | ~$1.00 | 32K | Together AI |
 | **Gemma 4 (31B / 26B-A4B MoE / E4B / E2B)** ⭐ NEW | self-host | self-host | 256K | Apache 2.0. 140+ languages; native vision/audio; function calling. |
 
-#### Embedding Models (May 2026)
+#### Embedding Models
 | Model | Cost / 1M tokens | Dimension |
 |-------|------------------|-----------|
 | **Cohere Embed 4** ⭐ NEW | $0.10 | 256 / 512 / 1024 / 1536 (Matryoshka) |

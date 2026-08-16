@@ -2,7 +2,7 @@
 
 Governance is now a delivery constraint, not a policy abstraction. The EU AI Act carries fines up to the greater of 35M euros or 7% of global turnover, US states are passing their own AI laws, and enterprise buyers ask for AI governance evidence in procurement. The good news for engineers: governance maps cleanly onto practices you already run (security, evals, observability, incident response), so the goal is to **emit governance evidence as a byproduct** rather than bolt on a parallel process.
 
-This chapter is time-sensitive. Dates and enforcement status are given **as of June 2026** and are moving, especially the EU timeline; verify against primary sources before relying on a specific date. Items that were provisional at the time of writing are flagged.
+This chapter is time-sensitive. Dates and enforcement status are given **as of August 2026** and are moving, especially the EU timeline; verify against primary sources before relying on a specific date. Items that were provisional at the time of writing are flagged.
 
 ## Table of Contents
 
@@ -27,19 +27,37 @@ Regulation (EU) 2024/1689 is the world's first comprehensive AI law, structured 
 - **Minimal risk** (most enterprise tooling): no mandatory obligations.
 - **GPAI / general-purpose models** are a separate cross-cutting layer (Articles 51-55), with extra obligations for "systemic-risk" models above a training-compute threshold (10^25 FLOP).
 
-**Timeline and enforcement status as of June 2026:**
+**Timeline and enforcement status as of August 2026:**
 
 | Date | Milestone | Status |
 |------|-----------|--------|
 | Aug 2024 | Regulation entered into force | Done |
 | Feb 2025 | Prohibited practices + AI-literacy obligations apply | Enforceable now |
 | Aug 2025 | GPAI model obligations, governance, and penalties apply | Enforceable now |
-| Aug 2026 | Article 50 transparency obligations apply | Upcoming (still scheduled) |
+| **Aug 2026** | **Article 50 transparency obligations apply; Commission gains Article 101 power to fine GPAI providers** | **Enforceable since 2 August 2026** |
 | Dec 2026 | New ban on AI-generated CSAM/NCII; synthetic-content marking grace period ends | Upcoming |
-| Dec 2027 | High-risk Annex III obligations apply (delayed ~16 months) | Provisional, see below |
-| Aug 2028 | High-risk Annex I obligations apply (delayed ~1 year) | Provisional |
+| Dec 2027 | High-risk Annex III obligations apply (delayed ~16 months) | Settled: Reg. (EU) 2026/1744 |
+| Aug 2028 | High-risk Annex I obligations apply (delayed ~1 year) | Settled: Reg. (EU) 2026/1744 |
 
-The delay of high-risk obligations is the **"Digital Omnibus"** simplification package. As of June 2026 it had cleared trilogue and European Parliament approval but was **not yet published in the Official Journal**, so the new high-risk dates (Dec 2027 / Aug 2028) are politically agreed and near-certain but legally pending. It does **not** roll back the prohibitions (Feb 2025) or GPAI obligations (Aug 2025), which are enforceable now. The Omnibus also adds a readiness/conditionality trigger that ties high-risk application to the availability of supporting standards, so the dates could move again.
+### What Actually Took Effect on 2 August 2026
+
+This is the date that turned transparency from a roadmap item into an enforceable obligation, and it is the one to design against right now.
+
+**Article 50 duties, in the order they hit an engineering backlog:**
+
+1. **Synthetic-content marking.** Providers of AI systems generating synthetic audio, image, video, or text must mark outputs in a machine-readable format detectable as artificially generated or manipulated, using solutions that are effective, interoperable, robust, and reliable as far as technically feasible. Note the grace period: systems already placed on the market before 2 August 2026 have until **2 December 2026** to comply with the marking duty. Interaction disclosure and deployer-side deepfake labeling applied immediately.
+2. **AI-interaction disclosure.** Systems that interact directly with people must inform the person they are dealing with an AI, unless that is obvious to a reasonably well-informed person.
+3. **Deepfake and public-interest text labeling** obligations sit on deployers rather than providers, which matters if you supply a platform others publish through.
+
+Penalties for Article 50 breaches run to **EUR 15,000,000 or 3% of total worldwide annual turnover, whichever is higher** (Article 99), with SME and startup fines capped at the lower of the two. Separately, **Article 101** switched on the same day: the Commission may now fine providers of general-purpose AI models up to 3% of annual global turnover or EUR 15,000,000 for infringements, for failing to supply requested documentation, or for denying the Commission access to a model for evaluation. That was the last carve-out from the 2025 penalties start date, and it is now closed.
+
+**California landed the same day and is more prescriptive.** SB 942 as amended by AB 853 became operative on 2 August 2026. A covered provider (a generative AI system with over 1,000,000 monthly visitors or users, publicly accessible in California) must embed a latent disclosure carrying the provider name, the system name and version, the creation or alteration timestamp, and a unique identifier, and must offer a **free public AI-detection tool**. Penalties are USD 5,000 per violation with each day counting separately.
+
+**The practical implication:** the two regimes overlap but neither contains the other. California is more prescriptive about what a latent disclosure must carry, so use its four fields as the metadata schema for image, video, and audio. The EU adds what California omits, most importantly **text** marking (California's latent-disclosure duty covers image, video, and audio, and AB 853 excludes AI-generated text) plus AI-interaction disclosure and deployer-side deepfake labeling. Build the union, not one or the other. Treat the detection tool as a shipped product surface with an SLO and abuse protection, not as a compliance document. And remember the honest limit: marking is removable, so provenance reduces ambiguity for cooperating consumers of content and is not a control against a determined adversary.
+
+**A note on what marking looks like in production.** Text watermarking moved from research to shipping in this window. Anthropic now applies an invisible statistical watermark to Claude's text output, using a version of the SynthID-Text approach published by Google DeepMind; models launched from 2 August 2026 carry it, and older models are being updated over subsequent months. Note that it is applied globally rather than only in the EU. If you generate text at scale, the question is no longer whether text marking is feasible.
+
+The delay of high-risk obligations came through the **"Digital Omnibus"** simplification package, and as of August 2026 it is no longer pending: it was published in the Official Journal on 24 July 2026 as **Regulation (EU) 2026/1744** and entered into force on 27 July 2026. The high-risk dates are therefore settled law rather than political agreement: Annex III use cases apply from **2 December 2027** and high-risk AI embedded in regulated products from **2 August 2028**. The Omnibus did not roll back the prohibitions (Feb 2025), the GPAI obligations (Aug 2025), or the Article 50 transparency duties, all of which are live.
 
 **Who bears which obligation** matters because it is easy to misjudge. GPAI providers maintain technical documentation, publish a training-data summary, and keep a copyright/opt-out policy (systemic-risk models add evaluations, adversarial testing, and incident reporting). High-risk **providers** carry the heavy conformity lift; high-risk **deployers** ensure human oversight, keep logs, and inform affected people. Critically, a downstream developer who substantially modifies a high-risk system, puts their name on it, or repurposes a GPAI into a high-risk use can **become the "provider"** and inherit those obligations (Article 25). Article 50 transparency splits too: providers must disclose AI interaction and mark synthetic content in a machine-readable way; deployers must disclose deepfakes and label AI-generated public-interest text.
 
@@ -61,7 +79,7 @@ The **Generative AI Profile** (NIST AI 600-1, Jul 2024) is a companion that enum
 
 ## The US Landscape
 
-There is **no comprehensive federal AI statute** as of June 2026, and the federal posture is deregulatory: Executive Order 14365 (Dec 2025) directs a DOJ task force to challenge state AI laws on preemption grounds, but a proposed federal moratorium on state laws did not pass. NIST AI RMF remains the voluntary federal touchstone.
+There is **no comprehensive federal AI statute** as of August 2026, and the federal posture is deregulatory: Executive Order 14365 (Dec 2025) directs a DOJ task force to challenge state AI laws on preemption grounds, but a proposed federal moratorium on state laws did not pass. NIST AI RMF remains the voluntary federal touchstone.
 
 That leaves a **state patchwork**. The Colorado AI Act (the first comprehensive state law) was amended and delayed to Jan 2027. California is the most active: SB 53 (frontier-model transparency and incident reporting) and AB 2013 (training-data transparency) have obligations live since Jan 2026, alongside sector laws on hiring and healthcare AI. Inconsistent definitions across states are exactly the friction the federal posture targets; verify the current status per state, since several effective dates have already shifted.
 
