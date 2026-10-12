@@ -1,12 +1,12 @@
 # Case Study: Customer-Specific Distillation Pipeline
 
-A Series-B AI product cuts frontier-model spend from $50K per month to $4 to 6K by distilling a 7B student model on 6 months of production traces, with a 3-month payback and a 4 to 6 month re-distillation cadence.
+A Series-B AI product cuts frontier-model spend from $50K per month to $4 to 6K by distilling an 8B student model on 6 months of production traces, with an under-3-month payback and a 4 to 6 month re-distillation cadence.
 
 ## The Business Problem
 
 A scaled AI product (about 8M user requests per month) runs on a frontier model. The cost line crossed $50K per month in early 2026, growth is 18 percent quarter over quarter, and finance asked for a plan. The team had one clean realization: roughly 90 percent of production traffic falls into a small number of recurring task patterns (intent classification, structured extraction, document summarization, three categories of triage). A frontier model is overkill for these; a much smaller model fine-tuned on the frontier's own outputs can serve them at a fraction of the cost.
 
-Constraints from the May 2026 reality:
+Constraints:
 
 - $50K per month frontier-model spend, growing
 - Latency budget: under 350 ms p95 for the high-volume tasks
@@ -14,7 +14,7 @@ Constraints from the May 2026 reality:
 - Compliance: customer data cannot leave a specific cloud region
 - Headcount: 1 ML engineer plus part-time platform support
 
-The distillation pattern is mature: DistilBERT ([Sanh et al., 2019](https://arxiv.org/abs/1910.01108)), TinyBERT, Alpaca-style instruction distillation ([Taori et al., 2023](https://github.com/tatsu-lab/stanford_alpaca)), and more recent work on chain-of-thought distillation ([Hsieh et al., 2023](https://arxiv.org/abs/2305.02301)) all show that a 7 to 13B student can recover 92 to 98 percent of teacher performance on focused tasks. Frontier-lab FDE teams (Anthropic Field Engineering, OpenAI Solutions) have publicly walked through the budget math in conference talks; the numbers below are aligned with what those teams quote to customers.
+The distillation pattern is mature: DistilBERT ([Sanh et al., 2019](https://arxiv.org/abs/1910.01108)), TinyBERT, Alpaca-style instruction distillation ([Taori et al., 2023](https://github.com/tatsu-lab/stanford_alpaca)), and more recent work on chain-of-thought distillation ([Hsieh et al., 2023](https://arxiv.org/abs/2305.02301)) all show that a 7 to 13B student can recover 92 to 98 percent of teacher performance on focused tasks. The budget numbers below are illustrative; rerun them on your own traffic and current prices, because both moved sharply in 2026 (see Key Design Decision 7).
 
 ## Architecture
 
@@ -50,12 +50,12 @@ flowchart LR
 
 | Layer | Tech | Purpose |
 |-------|------|---------|
-| Teacher | Frontier model (Claude Opus 4.7 or equivalent) | Source of labels |
-| Student | Llama 4 7B int4 or Qwen 3.6 7B | Production serving |
+| Teacher | Frontier model (Claude Opus 5.5 or equivalent), labeled through the Batch API at half price | Source of labels |
+| Student | IBM Granite 4.2 8B or Llama 3.1 8B, int4 | Production serving; Apache 2.0 or Llama license, no commercial gate at our size |
 | Trace store | S3 plus Langfuse | Sampling and replay |
 | Trainer | DeepSpeed plus FSDP on 8x H100 | One-week training run |
 | Eval | Per-task golden set, on-call paged on regression | Quality gate |
-| Serving | vLLM with FP8 | 350 ms p95 |
+| Serving | vLLM 0.30+ (security floor), int4 weights, FP8 KV cache | 350 ms p95 |
 
 ### Data flow
 
@@ -63,14 +63,16 @@ flowchart LR
 2. The sampler pulls stratified samples by task category, with rebalancing to ensure rare categories are represented.
 3. The teacher (frontier model) generates target outputs for each sample, often with chain-of-thought reasoning traces if the task benefits from reasoning distillation.
 4. A 5 percent human spot-check by domain experts catches teacher mistakes; we apply rejection sampling, keeping only pairs where human reviewers agree with the teacher.
-5. The student is fine-tuned for about 1 week on 8x H100 (~$22K compute), producing a 7B model.
+5. The student is fine-tuned for about 1 week on 8x H100 (~$4K to $5.4K compute: 1,344 H100-hours at $2.77 to $3.99 per GPU-hour), producing an 8B model.
 6. The model passes per-task evals, runs in shadow against production for 2 weeks, then gradual rollout: 5 percent, 20 percent, 50 percent, 90 percent over 3 weeks, with auto-rollback wired to live quality metrics.
 
 ## Key Design Decisions
 
 ### 1. Distill on real production traces, not synthetic data
 
-The temptation is to generate synthetic prompts via an LLM and label them with the teacher. We tried this; it produces a model that excels at synthetic prompts and degrades 4 to 7 points on real traffic. Production traces capture the distribution shift, oddities, and tail cases that matter. We collect 6 months of traces, sample stratified by task category, and use real prompts as the distillation source. This aligns with the practice frontier labs' FDE teams recommend.
+The temptation is to generate synthetic prompts via an LLM and label them with the teacher. We tried this; it produces a model that excels at synthetic prompts and degrades 4 to 7 points on real traffic. Production traces capture the distribution shift, oddities, and tail cases that matter. We collect 6 months of traces, sample stratified by task category, and use real prompts as the distillation source.
+
+Read the teacher's terms before you start. Frontier vendors' commercial terms restrict using outputs to build competing models, so get written confirmation that a task-specific student serving your own product is in bounds, and record which teacher and version labeled every pair.
 
 ### 2. Reject-sample with human spot-check
 
@@ -98,7 +100,7 @@ This conservative ramp has caught two regressions in the past year that the eval
 
 ### 6. Re-distillation cadence
 
-The world drifts. New product features change task distributions; users learn new behaviors; the teacher itself improves with new model releases. We re-distill every 4 to 6 months. The pipeline is partially automated: trace sampling, teacher labeling, and training are scripted; human spot-check and eval review still need a person. Each re-distillation costs about $26K all-in ($22K compute, $1,800 labeling, plus overhead) and takes 4 to 6 weeks.
+The world drifts. New product features change task distributions; users learn new behaviors; the teacher itself improves with new model releases. We re-distill every 4 to 6 months, which only works if the training path stays available. We fine-tune open weights in our own account rather than through a vendor's hosted fine-tuning: OpenAI is winding down its fine-tuning platform (organizations that never fine-tuned can no longer create jobs, and existing customers lose new-job creation on January 6, 2027), and a student you can no longer retrain becomes a liability on the next drift. The pipeline is partially automated: trace sampling, teacher labeling, and training are scripted; human spot-check and eval review still need a person. Each re-distillation costs about $9K all-in (about $5K compute, $1,800 labeling, plus overhead) and takes 4 to 6 weeks.
 
 ### 7. When distillation does NOT make sense
 
@@ -108,12 +110,13 @@ Distillation is not always right. Signals against:
 - Tasks are highly variable. If every request is unique, the student cannot learn a useful distribution.
 - The teacher itself is unstable or rapidly evolving. Re-distilling against a moving target wastes effort.
 - Quality bar is very tight (over 99 percent fidelity required). The distillation gap is real; if you cannot tolerate it, stick with the teacher.
+- A small hosted model already passes your golden set. Hosted prices fell hard in 2026: GPT-6 Luna launched at $0.10/$0.50 per 1M tokens, 40x below Claude Opus 5.5's $4/$20, and the mid tier converged on $2/$10. For high-volume classification and extraction, routing to a small hosted model with a good prompt can land below the student's $9K monthly run rate with no training pipeline at all. Distill when the small hosted models fail your golden set, when latency or residency rules them out, or when volume makes self-hosting cheaper.
 
 We use a quick-screen heuristic: at least 60 percent of traffic falls into 5 or fewer task patterns, and monthly spend on those tasks exceeds $20K. If both fail, we pass on distillation.
 
 ### 8. Quantization choice
 
-We serve the 7B student in int4 (GPTQ via vLLM with FP8 KV cache). int4 cuts memory roughly 4x and improves throughput by about 2.3x on H100 vs FP16. We measured an accuracy hit of 0.4 points on our composite, well within tolerance. We considered int8 (smaller hit, smaller speedup) and FP8 (less mature ecosystem); int4 won on cost-per-request.
+We serve the 8B student in int4 (GPTQ via vLLM with FP8 KV cache). int4 cuts memory roughly 4x and improves throughput by about 2.3x on H100 vs FP16. We measured an accuracy hit of 0.4 points on our composite, well within tolerance. We considered int8 (smaller hit, smaller speedup) and FP8 weights (near-lossless and well supported on H100, but only half the memory saving of int4); int4 won on cost-per-request.
 
 ### 9. Privacy considerations on training data
 
@@ -126,20 +129,20 @@ Production traces contain user PII by definition. Before training we run a redac
 | Trace collection (6 months) | Already paid as part of observability spend |
 | Teacher labeling (about 800K pairs) | $42K one-time |
 | Human spot-check | $8K one-time |
-| Compute (8x H100 for 1 week, plus retries) | $32K one-time |
+| Compute (8x H100 for 1 week, plus retries) | ~$8K one-time |
 | Eval set curation | $14K one-time |
 | Platform engineering (overhead) | $24K one-time |
-| **Total upfront** | **$120K** |
+| **Total upfront** | **$96K** |
 
 | Monthly run-rate | Before | After |
 |------------------|--------|-------|
 | Frontier model (10 percent of traffic, plus re-distillation harness) | $50K | $5K |
-| Student model serving (vLLM on dedicated H100s) | $0 | $1,200 |
-| **Monthly total** | **$50K** | **$6.2K** |
+| Student model serving (vLLM on two dedicated H100s, one for redundancy, about $2,000 each per month at the $2.77/GPU-hr October 1 index) | $0 | ~$4K |
+| **Monthly total** | **$50K** | **$9K** |
 
-Monthly savings: roughly $44K. Payback: 120K / 44K, about 2.7 months. We round to "3-month payback" for finance.
+Monthly savings: roughly $41K. Payback: 96K / 41K, about 2.3 months. We quote "under 3-month payback" to finance.
 
-Re-distillation costs $26K every 5 months on average, which we amortize against the same savings line. Net annual savings: about $470K.
+Re-distillation costs about $9K every 5 months on average, which we amortize against the same savings line. Net annual savings: about $470K.
 
 ## Distillation Pipeline
 
@@ -210,7 +213,7 @@ Some queries are routed both to the student and the teacher (during shadow); cos
 
 ### Cost model
 
-Monthly steady-state: $6.2K serving plus amortized re-distillation ($5.2K per month). Compared to $50K teacher-only, savings of about $38K per month after full amortization. Annualized: ~$456K saved net.
+Monthly steady-state: $9K run rate plus amortized re-distillation ($1.8K per month). Compared to $50K teacher-only, savings of about $39K per month after full amortization. Annualized: ~$470K saved net.
 
 ### On-call playbook
 
@@ -249,12 +252,10 @@ When we move a customer's traffic to a distilled student, we tell them. The cust
 - Taori et al., [Stanford Alpaca: An Instruction-following LLaMA model](https://github.com/tatsu-lab/stanford_alpaca)
 - Hsieh et al., [Distilling Step-by-Step](https://arxiv.org/abs/2305.02301)
 - Jiao et al., [TinyBERT: Distilling BERT for Natural Language Understanding](https://arxiv.org/abs/1909.10351)
-- Anthropic, [On distillation patterns](https://www.anthropic.com/research)
-- OpenAI, [Distillation in the platform](https://platform.openai.com/docs/guides/distillation)
-- [vLLM FP8 inference](https://docs.vllm.ai/en/latest/quantization/fp8.html)
-- [Langfuse trace sampling](https://langfuse.com/docs/observability/sampling)
+- OpenAI, [Distilling from a larger model](https://developers.openai.com/api/docs/guides/supervised-fine-tuning#distilling-from-a-larger-model) (built on OpenAI fine-tuning, which is being wound down)
+- [vLLM FP8 W8A8](https://docs.vllm.ai/en/latest/features/quantization/llm_compressor/fp8/) and [quantized KV cache](https://docs.vllm.ai/en/latest/features/quantization/quantized_kvcache/)
+- [Langfuse trace sampling](https://langfuse.com/docs/observability/features/sampling)
 - Hamel Husain, [Field guide to rapidly improving AI products](https://hamel.dev/blog/posts/field-guide/)
 - [DeepSpeed for training](https://www.deepspeed.ai/training/)
-- [Together AI distillation case study](https://www.together.ai/blog/distillation)
 
 Related chapters: [Fine-Tuning and Distillation](../03-training-and-adaptation/05-knowledge-distillation.md), [Inference Optimization](../04-inference-optimization/01-inference-fundamentals.md), [Cost Management](../04-inference-optimization/07-cost-optimization-playbook.md).

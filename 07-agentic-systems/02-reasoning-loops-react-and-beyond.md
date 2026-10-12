@@ -4,11 +4,11 @@ Reasoning Loops define the control flow of an agent. While **ReAct** was the 202
 
 ## Table of Contents
 
-- [The Evolution of the Loop](#evolution)
-- [ReAct: The Classic Pattern](#react)
-- [Self-Reflexion Loops](#reflexion)
-- [Plan-and-Solve (Soto)](#plan-and-solve)
-- [Flow Engineering (The LangGraph Pattern)](#flow-engineering)
+- [The Evolution of the Loop](#the-evolution-of-the-loop)
+- [ReAct: The Classic Pattern](#react-reasoning--acting)
+- [Self-Reflexion Loops](#self-reflexion-loops)
+- [Plan-and-Solve](#plan-and-solve)
+- [Flow Engineering (The LangGraph Pattern)](#flow-engineering-langgraph)
 - [Interview Questions](#interview-questions)
 - [References](#references)
 
@@ -20,7 +20,8 @@ Reasoning Loops define the control flow of an agent. While **ReAct** was the 202
 |-----|---------|-----------------|
 | **2023** | ReAct | Interleave thought and action. |
 | **2024** | Reflexion | Evaluate errors and re-try. |
-| **Today** | System 2 Loops | Use hidden CoT for robust multi-step logic. |
+| **2025** | System 2 Loops | Use hidden CoT for reliable multi-step logic. |
+| **2026** | Engineered harness loops | Thinking interleaved between tool calls, with the harness owning termination, verification, and budgets (see [Loop Engineering](12-loop-engineering.md)). |
 
 ---
 
@@ -87,14 +88,14 @@ I choose **ReAct** for **Exploratory** tasks where the environment is unpredicta
 ### Q: What is "Inference-Time Scaling" and how does it relate to Agentic Loops?
 
 **Strong answer:**
-Inference-Time Scaling (often associated with OpenAI's o1) refers to spending more compute *during the response generation* rather than just during training. In an agentic context, this means the model doesn't just output the first valid-looking action. It uses a **Search Tree** (like Monte Carlo Tree Search) to simulate different action paths internally before committing to the one most likely to succeed. This reduces the number of "Real World" tool calls needed, saving external API costs and reducing failure rates.
+Inference-Time Scaling (popularized by OpenAI's o1 in 2024) refers to spending more compute *during the response generation* rather than just during training. In current APIs it surfaces as an **effort** setting: GPT-6 Astra exposes five levels from low to max, and Claude Opus 5.5 and Fable 5.1 scale adaptive thinking with an effort parameter. In an agentic context, more thinking means the model weighs alternatives before committing to an action, which can cut the number of "Real World" tool calls and the failure rate. Two things I keep separate in an interview. First, vendors have not said their reasoning models run explicit tree search internally; if I want **Search Trees** (best-of-N, MCTS with a verifier), I build them in the harness, where I can see and score the branches. Second, effort is a cost and latency knob I tune per step, so I run the planner at high effort and the routine executor steps at low effort rather than paying maximum thinking on every tool call.
 
 ---
 
 ## References
-- Yao et al. "ReAct: Synergizing Reasoning and Acting" (2022/2025 update)
-- Shinn et al. "Reflexion: Language Agents with Iterative Homeostatic Learning" (2024)
-- Wang et al. "Plan-and-Solve Prompting" (2023)
+- Yao et al. "ReAct: Synergizing Reasoning and Acting in Language Models" (2022). https://arxiv.org/abs/2210.03629
+- Shinn et al. "Reflexion: Language Agents with Verbal Reinforcement Learning" (2023). https://arxiv.org/abs/2303.11366
+- Wang et al. "Plan-and-Solve Prompting" (2023). https://arxiv.org/abs/2305.04091
 
 ---
 

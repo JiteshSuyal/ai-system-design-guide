@@ -18,9 +18,11 @@
 - How to close the loop: turn eval results into system improvements
 - How to do all of this with your observability platform of choice (LangWatch, Langfuse, Braintrust, LangSmith, or your own)
 
-**Platform Examples:** This guide uses **LangWatch** (open-source, self-hosted or cloud) and **Langfuse** (open-source, cloud or self-hosted) as primary examples. The methodology is platform-agnostic — adapt it to whichever tool you use.
+**Platform Examples:** This guide uses **LangWatch** (open-source, self-hosted or cloud) and **Langfuse** (open-source, cloud or self-hosted) as primary examples. The methodology is platform-agnostic: adapt it to whichever tool you use.
 
-**LangWatch vs Langfuse:** Both are excellent open-source platforms with similar core capabilities. LangWatch offers simpler setup and built-in evaluators, while Langfuse provides more flexibility for custom pipelines and has a larger community. This guide shows both so you can choose based on your needs.
+**LangWatch vs Langfuse:** Both are open-source platforms with similar core capabilities. LangWatch ships a library of 30+ ready-made evaluators (RAG, safety, quality) you can attach without writing a judge prompt. Langfuse ships managed LLM-as-a-judge evaluators built from templates, managed code evaluators, and more mature prompt management, and has the larger community. This guide shows both so you can choose based on your needs.
+
+**SDK versions matter.** The Langfuse samples target the OTel-based Python SDK v4 (4.16.0 at the end of September 2026); tutorials that call `langfuse.trace()` are written for the v2 SDK and fail on a fresh install. The LangWatch samples target Python SDK 1.x (1.4.0 at the end of September 2026; `langwatch.setup()`, `langwatch.experiment.init()`). Pin both SDKs and re-check samples when you upgrade. The samples call `gpt-4o` and `gpt-4o-mini` because they are widely available and still accept `temperature`; for choosing a judge model today, see Chapter 13 and Appendix E.
 
 ---
 
@@ -67,7 +69,7 @@ There's a debate in the AI community: some people say "just vibe check your app"
 
 **Everyone needs evals.** The people who say they don't need evals are actually benefiting from evals that someone else did upstream.
 
-Example: If you're building a coding assistant with GPT-4, OpenAI already tested GPT-4 on massive code benchmarks. So you can "vibe check" your app. But for most applications that aren't simple uses of foundation models, you need your own evals.
+Example: If you're building a thin coding assistant on a frontier model, its lab already ran that model through large coding benchmarks before release. So you can "vibe check" your app. But for most applications that aren't simple uses of foundation models, you need your own evals.
 
 ### The Three Core Truths About Evals
 
@@ -192,7 +194,7 @@ ASSISTANT RESPONSE:
 **Better to include:**
 - System prompts used
 - Tool calls and their results
-- Model parameters (temperature, max_tokens, etc.)
+- Model parameters (temperature or reasoning effort, max_tokens, etc.)
 - Token counts
 - Latency (response time)
 - Cost per request
@@ -207,24 +209,24 @@ ASSISTANT RESPONSE:
 
 | Tool | Type | Best For | Cost |
 |------|------|----------|------|
-| **LangWatch** | Open source, cloud or self-hosted | Simple setup, built-in evaluators, great UX | Free tier + paid |
+| **LangWatch** | Open source, cloud or self-hosted | Simple setup, ready-made evaluators, great UX | Free tier + paid |
 | **Langfuse** | Open source, cloud or self-hosted | Custom pipelines, large community | Free tier + paid |
-| **Braintrust** | Cloud | Excellent UI, team collaboration | Paid |
-| **LangSmith** | Cloud | LangChain users | Paid |
+| **Braintrust** | Cloud (self-hosting on Enterprise) | Excellent UI, team collaboration | Free tier + paid |
+| **LangSmith** | Cloud (self-hosted/hybrid on Enterprise) | LangChain and LangGraph users | Free tier + paid |
 | **Build Your Own** | Custom | Learning, custom needs | Free |
 
 **LangWatch vs Langfuse comparison:**
-- **Setup:** LangWatch is simpler (3-line integration), Langfuse requires more configuration
-- **Evaluators:** LangWatch has 40+ built-in evaluators, Langfuse requires custom implementation
+- **Setup:** LangWatch is slightly simpler to start (`langwatch.setup()` plus a trace decorator); Langfuse's OpenAI drop-in client is equally quick for OpenAI-only apps
+- **Evaluators:** LangWatch has 30+ ready-made evaluators (Ragas RAG metrics, PII, jailbreak, content safety, off-topic, LLM-as-judge templates); Langfuse runs managed LLM-as-a-judge evaluators (from templates) and managed code evaluators (Python or TypeScript) on production observations and experiments, and you can also score from your own code through the SDK
 - **Flexibility:** Langfuse is more flexible for custom workflows, LangWatch is more opinionated
 - **Community:** Langfuse has a larger community and more integrations
-- **UI:** Both have excellent UIs; LangWatch focuses on analytics, Langfuse on workflow
+- **UI:** Both have strong UIs; LangWatch focuses on analytics, Langfuse on workflow
 
 All of these support the same core concepts: traces, spans, datasets, evaluations, and experiments. The methodology in this guide works with any of them.
 
 ### Setting Up LangWatch (Open-Source, Cloud or Self-Hosted)
 
-LangWatch is an open-source LLM observability and analytics platform. It provides tracing, evaluation, datasets, experiments, and 40+ built-in evaluators.
+LangWatch is an open-source LLM observability and analytics platform. It provides tracing, evaluation, datasets, experiments, and 30+ ready-made evaluators.
 
 #### Install and Configure
 
@@ -240,38 +242,37 @@ os.environ["LANGWATCH_API_KEY"] = "lw_..."  # or set in .env file
 
 **Cloud vs Self-Hosted:**
 - **Cloud:** Sign up at [langwatch.ai](https://langwatch.ai), get API key, done in 5 minutes
-- **Self-Hosted:** Run `docker-compose up` with their Docker setup, point to your own instance
+- **Self-Hosted:** Docker Compose for a quick local stack, Helm for Kubernetes production; the stack runs on PostgreSQL, Redis, and ClickHouse, with S3-compatible object storage as an option in the Helm chart
 
-#### Instrument Your Application (Auto-Tracing)
+#### Instrument Your Application
 
-LangWatch supports auto-instrumentation for most frameworks:
+`langwatch.setup()` initializes the SDK. A `@langwatch.trace()` decorator creates the root of each trace, and `autotrack_openai_calls()` captures every OpenAI call made inside it:
 
 ```python
 import langwatch
+from openai import OpenAI
 
-# Initialize LangWatch
-langwatch.init()
+langwatch.setup()  # reads LANGWATCH_API_KEY
+client = OpenAI()
 
-# Your existing OpenAI code now gets traced automatically!
-import openai
-client = openai.OpenAI()
-
-response = client.chat.completions.create(
-    model="gpt-4o-mini",
-    messages=[
-        {"role": "system", "content": "You are a recipe assistant."},
-        {"role": "user", "content": "How do I make pancakes?"}
-    ],
-    temperature=0.7
-)
-# This call is automatically captured by LangWatch!
+@langwatch.trace()
+def answer(question):
+    # Capture every call this client makes inside the trace
+    langwatch.get_current_trace().autotrack_openai_calls(client)
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are a recipe assistant."},
+            {"role": "user", "content": question}
+        ],
+        temperature=0.7
+    )
+    return response.choices[0].message.content
 ```
 
 **Framework Support:**
-- OpenAI (automatic)
-- LangChain (automatic)
-- LlamaIndex (automatic)
-- Anthropic Claude (automatic)
+- OpenAI (`autotrack_openai_calls`)
+- LangChain, LlamaIndex, Anthropic, and others: OpenTelemetry instrumentors (for example OpenInference) passed to `langwatch.setup(instrumentors=[...])`, or the framework-specific helpers in the LangWatch docs
 - Any custom LLM (manual spans)
 
 #### Add Custom Spans with Decorators
@@ -279,9 +280,9 @@ response = client.chat.completions.create(
 ```python
 import langwatch
 
-@langwatch.span(type="chain")
+@langwatch.trace(name="sql-pipeline")
 def my_pipeline(question):
-    """Parent span for the whole pipeline"""
+    """Root of the trace for the whole pipeline"""
     sql = generate_sql(question)
     results = execute_query(sql)
     return synthesize_answer(question, results)
@@ -298,7 +299,7 @@ def execute_query(sql):
 ```
 
 **Comparison with Langfuse:**
-Both use decorators, but LangWatch's `@langwatch.span()` is simpler than Langfuse's `@observe()`. LangWatch automatically categorizes spans by type, while Langfuse requires explicit `as_type` parameters.
+Both use decorators and both take an explicit span type: `type=` on `@langwatch.span()`, `as_type=` on Langfuse's `@observe()`. LangWatch separates the root (`@langwatch.trace()`) from child spans; Langfuse makes the outermost `@observe()` the trace.
 
 ### Setting Up Langfuse (Open-Source, Cloud or Self-Hosted)
 
@@ -307,20 +308,20 @@ Langfuse provides tracing, evaluation, datasets, experiments, and prompt managem
 #### Install and Configure
 
 ```bash
-pip install langfuse openai
+pip install langfuse openai  # Python SDK v4.x (OpenTelemetry-based)
 ```
 
 ```python
 # Set environment variables (or pass to constructor)
 # LANGFUSE_SECRET_KEY="sk-lf-..."
 # LANGFUSE_PUBLIC_KEY="pk-lf-..."
-# LANGFUSE_HOST="https://cloud.langfuse.com"  # or your self-hosted URL
+# LANGFUSE_BASE_URL="https://cloud.langfuse.com"  # or your self-hosted URL (older examples use LANGFUSE_HOST)
 ```
 
 #### Instrument Your Application (Drop-In Replacement)
 
 ```python
-# Just change your import — everything else stays the same!
+# Just change your import; everything else stays the same
 from langfuse.openai import OpenAI
 
 client = OpenAI()
@@ -362,25 +363,31 @@ Both platforms support versioned prompt management:
 
 ```python
 import langwatch
+from langwatch.prompts.types import Message
 
-# Create a prompt template
+# Create a prompt (versioned on the platform, addressed by its handle).
+# `prompt` is the system message; extra messages must be Message objects.
 langwatch.prompts.create(
-    name="recipe-assistant-v1",
-    template=[
-        {"role": "system", "content": "You are a recipe assistant..."},
-        {"role": "user", "content": "{{question}}"}
-    ],
-    model="gpt-4o-mini",
-    temperature=0.7
+    handle="recipe-assistant",
+    scope="PROJECT",
+    prompt="You are a recipe assistant...",
+    messages=[Message(role="user", content="{{input}}")],
 )
 
-# Use at runtime
-prompt = langwatch.prompts.get("recipe-assistant-v1")
-messages = prompt.render(question="How do I make pancakes?")
-response = client.chat.completions.create(messages=messages, **prompt.settings)
+# Use at runtime: the model comes from the prompt version, not from code
+from litellm import completion
+
+prompt = langwatch.prompts.get("recipe-assistant")
+compiled = prompt.compile(input="How do I make pancakes?")
+response = completion(
+    model=prompt.model,  # e.g. "openai/gpt-4o-mini", LiteLLM's provider/model format
+    messages=compiled.messages,
+)
 ```
 
-**LangWatch advantage:** Simpler API, automatic parameter management (temperature, model stored with prompt).
+The Python SDK's `prompts.create()` takes no `model` argument (as of SDK 1.4.0, even though some LangWatch doc examples pass one), so pick the model in the prompt editor in the LangWatch UI or send it through the REST API.
+
+**LangWatch advantage:** Simple API, and the model is stored with the prompt. Read it at runtime (`prompt.model`) and a model swap becomes a prompt version, not a deploy.
 
 #### Langfuse
 
@@ -412,23 +419,26 @@ compiled = prompt.compile(query="How do I make pancakes?")
 
 ```python
 import langwatch
-import pandas as pd
 
-df = pd.DataFrame({
-    "query": [
-        "Suggest a quick vegan breakfast recipe",
-        "I have chicken and rice. What can I cook?",
-        "Give me a dessert recipe with chocolate",
-    ]
-})
-
-dataset = langwatch.datasets.create(
-    name="recipe-queries",
-    dataframe=df,
+langwatch.dataset.create_dataset(
+    "recipe-queries",
+    columns=[{"name": "query", "type": "string"}],
 )
+
+langwatch.dataset.create_records(
+    "recipe-queries",
+    entries=[
+        {"query": "Suggest a quick vegan breakfast recipe"},
+        {"query": "I have chicken and rice. What can I cook?"},
+        {"query": "Give me a dessert recipe with chocolate"},
+    ],
+)
+
+# Later: load it straight into pandas
+df = langwatch.dataset.get_dataset("recipe-queries").to_pandas()
 ```
 
-**LangWatch advantage:** Direct pandas DataFrame support, simpler API.
+**LangWatch advantage:** Datasets load straight into a pandas DataFrame, which is how most eval notebooks already work.
 
 #### Langfuse
 
@@ -454,12 +464,14 @@ for query in ["Suggest a quick vegan breakfast recipe",
 
 **Without traces, you can't do evals.** This is your foundation. Set this up first before anything else.
 
+**Re-check that traces arrive after every SDK upgrade.** In August 2026 the OpenAI Python SDK (3.0) and the Anthropic Python SDK (1.0) both moved their HTTP layer from httpx to httpx2. Anthropic's migration guide warns that httpx-level hooks (OpenTelemetry's HTTPX instrumentor, Sentry's httpx integration, respx, vcrpy) can silently miss SDK requests unless `httpx2.alias_httpx()` runs before anything imports httpx. Nothing errors: spans quietly stop, and eval tests that replay recorded responses can start hitting the live API. Treat a trace count that drops after a dependency bump as an instrumentation bug until proven otherwise.
+
 **For PMs/QAs:** You don't need to write the instrumentation code. Ask your engineers to set up tracing, then use the web UI to review traces visually. Both LangWatch (`langwatch.ai` or your self-hosted URL) and Langfuse (`cloud.langfuse.com` or your self-hosted URL) provide UIs that let you browse, search, and annotate traces without writing any code.
 
 **Platform Choice Guidance:**
 - Choose **LangWatch** if: You want the fastest setup, built-in evaluators, and focus on analytics
 - Choose **Langfuse** if: You need maximum flexibility, have complex custom workflows, or want the largest community
-- Use **both**: They complement each other - LangWatch for quick evals, Langfuse for deep workflow customization
+- Use **both**: They complement each other (LangWatch for quick evals, Langfuse for deep workflow customization), at the cost of instrumenting twice
 
 ---
 
@@ -541,29 +553,7 @@ for i in range(25):  # Generate 25 diverse tuples
 
 #### Convert Tuples to Natural Language Queries Using an LLM
 
-You can use any LLM to convert dimension tuples into realistic queries. Here are platform-specific approaches:
-
-**With LangWatch (built-in generation):**
-
-```python
-import langwatch
-
-QUERY_GEN_PROMPT = """Convert this dimension tuple into a realistic user query
-for a Recipe Bot. Be creative and vary your style.
-
-Dimension tuple: {tuple_description}
-
-Generate 1 unique, realistic query:"""
-
-queries = []
-for t in dimension_tuples:
-    result = langwatch.completion(
-        prompt=QUERY_GEN_PROMPT.format(tuple_description=str(t)),
-        model="gpt-4o-mini",
-        temperature=0.9
-    )
-    queries.append(result.text)
-```
+You can use any LLM to convert dimension tuples into realistic queries. Neither platform needs a special API for this step: call your LLM client directly, and wrap the loop in your platform's tracing (a `@langwatch.trace()` function or Langfuse's drop-in client) if you want the generations logged.
 
 **With any LLM (platform-agnostic):**
 
@@ -667,8 +657,8 @@ Policy violation."
 - **Total time for 100 traces: ~45 minutes**
 
 **Platform-Specific Note:**
-- **LangWatch:** Use the "Annotations" feature to add notes directly to traces in the UI
-- **Langfuse:** Use the "Comments" feature to add notes to traces
+- **LangWatch:** Use "Annotations" to add notes directly to traces, or an annotation queue to work through a batch one by one
+- **Langfuse:** Use "Comments" to add notes to traces, or an annotation queue for structured review
 
 ### Step 3: Categorize Errors Using Axial Coding
 
@@ -748,17 +738,24 @@ Respond with just the label name."""
 # or loop with any LLM client)
 ```
 
-**With LangWatch (batch evaluation):**
+**With LangWatch (parallel loop):**
 
 ```python
 import langwatch
+from openai import OpenAI
 
-results = langwatch.evaluate.batch(
-    dataset=error_notes_df,
-    evaluator="custom_classifier",
-    prompt_template=CLASSIFICATION_PROMPT,
-    model="gpt-4o-mini"
-)
+client = OpenAI()
+evaluation = langwatch.experiment.init("failure-mode-labeling")
+
+for index, row in evaluation.loop(error_notes_df.iterrows(), threads=8):
+    def task(index, row):
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": CLASSIFICATION_PROMPT.format(**row)}],
+            temperature=0
+        )
+        error_notes_df.loc[index, "label"] = response.choices[0].message.content
+    evaluation.submit(task, index, row)
 ```
 
 **With Langfuse (manual iteration):**
@@ -782,7 +779,8 @@ for note in error_notes:
 **Count how many times each category appears:**
 
 ```python
-label_counts = results["output"].value_counts()
+label_counts = error_notes_df["label"].value_counts()
+# list-of-dicts version: pd.DataFrame(error_notes)["label"].value_counts()
 ```
 
 **Example results from a real evaluation:**
@@ -912,7 +910,7 @@ DIETARY RESTRICTION DEFINITIONS:
 - Vegetarian: No meat or fish, but dairy and eggs are allowed
 - Gluten-free: No wheat, barley, rye, or other gluten-containing grains
 - Keto: Very low carb (<20g net carbs), high fat, moderate protein
-[... full definitions — see Appendix C for the full list ...]
+[... full definitions: see Appendix C for the full list ...]
 
 EVALUATION CRITERIA:
 - PASS: Recipe clearly adheres to the dietary preferences
@@ -927,29 +925,33 @@ Return JSON: {"label": "PASS" or "FAIL", "explanation": "..."}
 
 **Platform-Specific Labeling:**
 
-**With LangWatch (built-in evaluators):**
+**With LangWatch (experiment loop):**
+
+LangWatch's built-in evaluators cover generic checks (RAG faithfulness, PII, jailbreaks, off-topic). A domain criterion like dietary adherence is always your own judge: either an "LLM-as-a-Judge Boolean" evaluator configured in the UI with your prompt, or your judge called from an experiment loop, as here:
 
 ```python
 import langwatch
+from openai import OpenAI
 
-# LangWatch has 40+ built-in evaluators including dietary compliance
-results = langwatch.evaluate.batch(
-    dataset=traces_df,
-    evaluators=["dietary_compliance"],  # Built-in evaluator
-    model="gpt-4o"
-)
+client = OpenAI()
+df = langwatch.dataset.get_dataset("recipe-traces").to_pandas()
+evaluation = langwatch.experiment.init("dietary-labeling")
 
-# Or create custom evaluator
-custom_evaluator = langwatch.evaluators.create(
-    name="dietary_adherence",
-    prompt=LABELING_PROMPT,
-    model="gpt-4o"
-)
-
-results = langwatch.evaluate.batch(
-    dataset=traces_df,
-    evaluators=[custom_evaluator]
-)
+for index, row in evaluation.loop(df.iterrows(), threads=8):
+    def task(index, row):
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": LABELING_PROMPT.format(**row)}],
+            temperature=0
+        )
+        result = parse_json(response.choices[0].message.content)
+        evaluation.log(
+            "dietary_adherence",
+            index=index,
+            passed=result["label"] == "PASS",
+            data={"explanation": result["explanation"]},
+        )
+    evaluation.submit(task, index, row)
 ```
 
 **With Langfuse (custom implementation):**
@@ -969,8 +971,8 @@ for trace in traces:
     labels.append(parse_json(response.choices[0].message.content))
 ```
 
-**LangWatch advantage:** 40+ built-in evaluators save time for common use cases.
-**Langfuse advantage:** Complete control over custom evaluation logic.
+**LangWatch advantage:** 30+ ready-made evaluators save time on generic checks; per-row results show up in the experiment UI.
+**Langfuse advantage:** Complete control over custom evaluation logic, and once the prompt is validated you can register it as a managed LLM-as-a-judge evaluator that scores new observations automatically.
 
 ### Step 3: Split Data (Train / Dev / Test)
 
@@ -1018,7 +1020,7 @@ DIETARY RESTRICTION DEFINITIONS:
 - Dairy-free: No milk, cheese, butter, yogurt, or other dairy products
 - Keto: Very low carb (typically <20g net carbs), high fat
 - Paleo: No grains, legumes, dairy, refined sugar, or processed foods
-[... all 16 definitions — see Appendix C for the full list ...]
+[... all 16 definitions: see Appendix C for the full list ...]
 ```
 
 #### Part 2: Clear Evaluation Criteria
@@ -1127,27 +1129,27 @@ def eval_fn(*, output, expected, **kwargs):
 ```python
 import langwatch
 
-# Create custom evaluator with your judge prompt
-judge_evaluator = langwatch.evaluators.create(
-    name="dietary-judge-v1",
-    prompt=judge_prompt_template,
-    model="gpt-4o",
-    temperature=0
-)
+dev_df = langwatch.dataset.get_dataset("dietary-dev").to_pandas()
+evaluation = langwatch.experiment.init("dietary-judge-v1-dev")
+rows = []
 
-# Run on dev set
-results = langwatch.evaluate.batch(
-    dataset=dev_dataset,
-    evaluators=[judge_evaluator],
-    metrics=["tp", "tn", "fp", "fn", "tpr", "tnr"]
-)
+for index, row in evaluation.loop(dev_df.iterrows(), threads=8):
+    def task(index, row):
+        judge = run_judge(row)  # your judge prompt + model, returns {"label": ...}
+        truth = {"label": row["ground_truth"]}
+        # Log each confusion-matrix cell as its own metric
+        evaluation.log("tp", index=index, score=eval_tp(output=judge, expected=truth))
+        evaluation.log("tn", index=index, score=eval_tn(output=judge, expected=truth))
+        evaluation.log("fp", index=index, score=eval_fp(output=judge, expected=truth))
+        evaluation.log("fn", index=index, score=eval_fn(output=judge, expected=truth))
+        rows.append({"judge": judge["label"], "truth": row["ground_truth"]})
+    evaluation.submit(task, index, row)
 
-# LangWatch automatically calculates TPR and TNR
-print(f"TPR: {results.metrics['tpr']:.1%}")
-print(f"TNR: {results.metrics['tnr']:.1%}")
+# TPR and TNR are ratios of the summed cells: compute them from `rows`
+# with the same formulas as the Langfuse example below
 ```
 
-**LangWatch advantage:** Built-in metric calculation, no need to manually compute confusion matrix.
+**LangWatch advantage:** Per-row cells are browsable in the experiment UI, so you can filter straight to the false positives.
 
 **With Langfuse:**
 
@@ -1169,7 +1171,12 @@ result = langfuse.run_experiment(
 
 print(result.format())
 
-# Calculate TPR/TNR manually from results
+# Collect (judge, truth) pairs from the item results, then compute TPR/TNR
+results = [
+    {"judge": r.output.get("label", "").upper(),
+     "truth": r.item["expected_output"].get("label", "").upper()}
+    for r in result.item_results
+]
 tp = sum(1 for r in results if r["judge"] == "PASS" and r["truth"] == "PASS")
 tn = sum(1 for r in results if r["judge"] == "FAIL" and r["truth"] == "FAIL")
 fp = sum(1 for r in results if r["judge"] == "PASS" and r["truth"] == "FAIL")
@@ -1238,7 +1245,7 @@ Test Set Performance:
   Accuracy: 84.0%
 ```
 
-Notice the first attempt had a TNR of only 22.2% — meaning when a recipe actually violated dietary restrictions, the judge only caught it 22% of the time! This is dangerous (imagine telling a diabetic a recipe is safe when it isn't). After careful prompt iteration, the judge achieved 100% TNR.
+Notice the first attempt had a TNR of only 22.2%, meaning when a recipe actually violated dietary restrictions, the judge only caught it 22% of the time! This is dangerous (imagine telling a diabetic a recipe is safe when it isn't). After careful prompt iteration, the judge achieved 100% TNR.
 
 ### Target Metrics
 
@@ -1261,8 +1268,8 @@ Notice the first attempt had a TNR of only 22.2% — meaning when a recipe actua
 1. **Test your judge** on Dev set
 2. **Calculate TPR and TNR**
 3. **Look at errors:**
-   - Where did it miss real failures? (False Negatives)
-   - Where did it false alarm? (False Positives)
+   - Where did it miss real failures? (False Positives: it said PASS on a real FAIL)
+   - Where did it false alarm? (False Negatives: it said FAIL on a real PASS)
 4. **Update the prompt:**
    - Add missed scenarios to criteria
    - Add false alarm scenarios to "NOT a failure" section
@@ -1293,25 +1300,26 @@ print(f"Final TNR: {tnr:.1%}")
 
 Once validated, run your judge on ALL production traces:
 
-**With LangWatch (batch evaluation with built-in concurrency):**
+**With LangWatch (experiment loop with parallel threads):**
 
 ```python
 import langwatch
 
-# Run judge on all production traces
-results = langwatch.evaluate.batch(
-    dataset=all_traces_df,
-    evaluators=[judge_evaluator],
-    concurrency=20,  # Parallel processing
-    cache=True  # Cache results for duplicate traces
-)
+evaluation = langwatch.experiment.init("dietary-judge-full-run")
+verdicts = []
 
-# Get summary statistics
-pass_rate = results.metrics["pass_rate"]
-print(f"Raw pass rate: {pass_rate:.1%}")
+for index, row in evaluation.loop(all_traces_df.iterrows(), threads=20):
+    def task(index, row):
+        judge = run_judge(row)
+        passed = judge["label"] == "PASS"
+        evaluation.log("dietary_adherence", index=index, passed=passed)
+        verdicts.append(passed)
+    evaluation.submit(task, index, row)
+
+print(f"Raw pass rate: {sum(verdicts) / len(verdicts):.1%}")
 ```
 
-**LangWatch advantage:** Automatic concurrency management, built-in caching, progress tracking.
+**LangWatch advantage:** Parallel execution and progress tracking with no thread-pool code. Caching duplicate judgments is still on you (Chapter 13).
 
 **With Langfuse (experiment on dataset):**
 
@@ -1439,16 +1447,23 @@ def eval_no_markdown_in_sms(trace) -> dict:
 ```python
 import langwatch
 
-# Register as custom evaluator
-@langwatch.evaluator(name="no_markdown_sms")
-def eval_no_markdown_in_sms(trace):
-    # ... implementation above ...
-    return {'passed': result['passed'], 'score': 1.0 if result['passed'] else 0.0}
+# Offline: log the check per row inside an experiment
+evaluation = langwatch.experiment.init("no-markdown-sms")
 
-# Run on dataset
-results = langwatch.evaluate.batch(
-    dataset=traces_df,
-    evaluators=["no_markdown_sms"]
+for index, row in evaluation.loop(traces_df.iterrows()):
+    def task(index, row):
+        result = eval_no_markdown_in_sms(row)
+        evaluation.log("no_markdown_sms", index=index, passed=result['passed'],
+                       data={"reason": result['reason']})
+    evaluation.submit(task, index, row)
+
+# Online: inside the traced request handler, attach the result to the
+# live span that produced the response
+result = eval_no_markdown_in_sms(trace)
+langwatch.get_current_span().add_evaluation(
+    name="no_markdown_sms",
+    passed=result['passed'],
+    details=result['reason'],
 )
 ```
 
@@ -1568,20 +1583,27 @@ A complete eval suite typically has:
 
 **Platform Comparison for Mixed Eval Suites:**
 
-**LangWatch approach (unified):**
+**LangWatch approach (one loop, mixed evaluators):**
 ```python
 import langwatch
 
-# All evaluators registered in one place
-langwatch.evaluate.batch(
-    dataset=traces_df,
-    evaluators=[
-        "no_markdown_sms",  # Code-based (custom)
-        "tool_validation",   # Code-based (custom)
-        "dietary_compliance", # LLM-based (built-in)
-        "helpfulness"        # LLM-based (built-in)
-    ]
-)
+evaluation = langwatch.experiment.init("recipe-suite")
+
+for index, row in evaluation.loop(traces_df.iterrows(), threads=8):
+    def task(index, row):
+        # Code-based (yours)
+        evaluation.log("no_markdown_sms", index=index,
+                       passed=eval_no_markdown_in_sms(row)['passed'])
+        evaluation.log("tool_validation", index=index,
+                       passed=eval_correct_tool_called(row)['passed'])
+        # LLM-based (your judge)
+        evaluation.log("dietary_adherence", index=index,
+                       passed=run_judge(row)["label"] == "PASS")
+        # Built-in LangWatch evaluator
+        evaluation.evaluate("presidio/pii_detection", index=index,
+                            data={"output": row["assistant_message"]},
+                            settings={})  # required; {} keeps the defaults
+    evaluation.submit(task, index, row)
 ```
 
 **Langfuse approach (flexible but manual):**
@@ -1667,7 +1689,7 @@ import re
 
 # Preserves numbers, temperatures, measurements
 _TOKEN_RE = re.compile(
-    r"\d+\s*[x x]\s*\d+"      # Dimensions like 9x13
+    r"\d+\s*[x×]\s*\d+"       # Dimensions like 9x13 or 9×13
     r"|(?:\d+/?\d+)"           # Fractions like 1/2
     r"|(?:\d+(?:\.\d+)?)"      # Numbers like 375
     r"|(?:degrees[fc])"           # Temperature units
@@ -1757,25 +1779,22 @@ def MRR(output, metadata, **kwargs):
 ```python
 import langwatch
 
-def bm25_task(example):
-    query = example["input"]["input"]
-    hits = retrieve_bm25(query, corpus, bm25, tokenized_corpus, top_n=5)
-    return {"top_ids": [h["id"] for h in hits], "top_titles": [h["title"] for h in hits]}
+df = langwatch.dataset.get_dataset("recipe-synthetic-queries").to_pandas()
+evaluation = langwatch.experiment.init("bm25-retrieval")
 
-# Register custom metrics
-@langwatch.metric(name="recall_at_1")
-def recall_at_1_metric(output, expected):
-    return recall_at_k(1, output, expected)
-
-# Run experiment
-results = langwatch.evaluate.batch(
-    dataset=synthetic_queries_dataset,
-    task=bm25_task,
-    metrics=["recall_at_1", "recall_at_3", "recall_at_5", "mrr"]
-)
+for index, row in evaluation.loop(df.iterrows(), threads=8):
+    def task(index, row):
+        hits = retrieve_bm25(row["query"], corpus, bm25, tokenized_corpus, top_n=5)
+        output = {"top_ids": [h["id"] for h in hits]}
+        metadata = {"source_recipe_id": row["source_recipe_id"]}
+        for k in (1, 3, 5):
+            evaluation.log(f"recall_at_{k}", index=index,
+                           score=recall_at_k(k, output=output, metadata=metadata))
+        evaluation.log("mrr", index=index, score=MRR(output=output, metadata=metadata))
+    evaluation.submit(task, index, row)
 ```
 
-**LangWatch advantage:** Built-in RAG metrics, automatic visualization of retrieval performance.
+**LangWatch advantage:** The built-in Ragas evaluators (context precision, context recall, faithfulness, response relevancy) cover the LLM-judged RAG metrics. Rank metrics like Recall@K and MRR you log yourself, as above.
 
 #### With Langfuse
 
@@ -1966,73 +1985,72 @@ Return JSON: {"explanation": "...", "label": "pass" or "fail"}
 
 ### Running State-Level Evaluations
 
-The approach is the same regardless of platform: query spans by pipeline state, run the appropriate evaluator, and log results.
-
-#### With LangWatch
+The approach is the same regardless of platform: get the spans for each pipeline state, run that state's evaluator, and log the result against the span.
 
 ```python
-import langwatch
-
 STATES = [
     "ParseRequest", "PlanToolCalls", "GenRecipeArgs",
     "GetRecipes", "GenWebArgs", "GetWebInfo", "ComposeResponse"
 ]
-
-for state_name in STATES:
-    # Get all spans for this state
-    spans_df = langwatch.get_spans(
-        filters={"name": state_name}
-    )
-    
-    # Load evaluator for this state
-    with open(f"evaluators/{state_name.lower()}_eval.txt") as f:
-        eval_prompt = f.read()
-    
-    # Create custom evaluator
-    evaluator = langwatch.evaluators.create(
-        name=f"{state_name}_eval",
-        prompt=eval_prompt,
-        model="gpt-4o"
-    )
-    
-    # Run evaluation
-    results = langwatch.evaluate.batch(
-        dataset=spans_df,
-        evaluators=[evaluator]
-    )
-    
-    # Results automatically logged to LangWatch
-    print(f"{state_name}: {results.metrics['pass_rate']:.1%} pass rate")
+# run_evaluator(state_name, input, output) loads evaluators/{state}_eval.txt,
+# calls your judge model, and returns {"label": "pass"|"fail", "explanation": ...}
 ```
 
-**LangWatch advantage:** Automatic span querying, built-in result aggregation by state.
+#### With LangWatch
+
+For synthetic test runs, evaluate each state where it runs and attach the verdict to its span. Keep this behind a flag: in production, sample spans offline instead of adding a judge call to every request.
+
+```python
+import langwatch
+
+@langwatch.span(type="llm", name="ParseRequest")
+def parse_request(query):
+    output = llm_parse(query)
+    if EVAL_MODE:  # test runs only
+        verdict = run_evaluator("ParseRequest", query, output)
+        langwatch.get_current_span().add_evaluation(
+            name="ParseRequest_eval",
+            passed=verdict["label"] == "pass",
+            details=verdict["explanation"],
+        )
+    return output
+```
+
+To evaluate traces after the fact, pull them with `langwatch.traces.search()` (a wrapper over the REST traces search API; page with the returned `scrollId`) and run the same loop as the Langfuse version below.
+
+**LangWatch advantage:** Verdicts live on the span, so the trace view shows exactly which state failed.
 
 #### With Langfuse
 
 ```python
-from langfuse import get_client, observe
+from langfuse import get_client
 
 langfuse = get_client()
 
-# Fetch traces and filter by span name
-traces = langfuse.api.trace.list(limit=500, tags=["recipe-pipeline"])
+for state_name in STATES:
+    # Observations API v2 (needs a Langfuse v4 server: Cloud, or self-hosted
+    # after upgrading). The trace list/get endpoints are deprecated and leave
+    # Langfuse Cloud on November 16, 2026. Always bound the time window.
+    page = langfuse.api.observations.get_many(
+        name=state_name,
+        fields="core,basic,io",
+        from_start_time=run_started_at,
+        to_start_time=run_finished_at,
+        limit=1000,  # max per page; pass page.meta.cursor back for more
+    )
+    for observation in page.data:
+        # v2 returns input/output as raw strings; parse JSON if your state emits it
+        result = run_evaluator(state_name, observation.input, observation.output)
 
-for trace in traces.data:
-    trace_detail = langfuse.api.trace.get(trace.id)
-    for observation in trace_detail.observations:
-        if observation.name in STATES:
-            # Run evaluator
-            result = run_evaluator(observation.name, observation.input, observation.output)
-
-            # Log score back to Langfuse
-            langfuse.create_score(
-                trace_id=trace.id,
-                observation_id=observation.id,
-                name=f"{observation.name}_eval",
-                value=1 if result["label"] == "pass" else 0,
-                data_type="BOOLEAN",
-                comment=result["explanation"],
-            )
+        # Log score back to Langfuse
+        langfuse.create_score(
+            trace_id=observation.trace_id,
+            observation_id=observation.id,
+            name=f"{state_name}_eval",
+            value=1 if result["label"] == "pass" else 0,
+            data_type="BOOLEAN",
+            comment=result["explanation"],
+        )
 ```
 
 ### Analyzing Failure Distribution
@@ -2060,9 +2078,9 @@ Summary:
 
 **Platform Comparison for Analytics:**
 
-**LangWatch:** Built-in analytics dashboard automatically shows failure distribution by state, no manual aggregation needed.
+**LangWatch:** Evaluation results attached to spans can be charted in its analytics views with little setup.
 
-**Langfuse:** More flexible custom queries, but requires manual aggregation to generate these statistics.
+**Langfuse:** Scores are queryable through the Metrics API and chartable in custom dashboards; a per-state failure table like the one above is a group-by on score name.
 
 ### Using LLM to Synthesize Improvement Strategies
 
@@ -2112,13 +2130,13 @@ Even without writing code, you can:
 
 ### Why Multi-Turn Is Different
 
-Most eval examples show single-turn Q&A: user asks, AI answers, done. But real applications have **conversations** — and new failure modes emerge across turns:
+Most eval examples show single-turn Q&A: user asks, AI answers, done. But real applications have **conversations**, and new failure modes emerge across turns:
 
-1. **Context loss** — AI forgets what the user said 3 messages ago
-2. **Contradiction** — AI says one thing in turn 2, contradicts it in turn 5
-3. **Instruction drift** — AI gradually stops following the original system prompt
-4. **Repetition** — AI repeats the same information or suggestion
-5. **Escalation failure** — AI doesn't know when to hand off to a human
+1. **Context loss**: AI forgets what the user said 3 messages ago
+2. **Contradiction**: AI says one thing in turn 2, contradicts it in turn 5
+3. **Instruction drift**: AI gradually stops following the original system prompt
+4. **Repetition**: AI repeats the same information or suggestion
+5. **Escalation failure**: AI doesn't know when to hand off to a human
 
 ### Strategies for Multi-Turn Evaluation
 
@@ -2173,7 +2191,7 @@ SCENARIOS = [
     {
         "turns": [
             "I'm looking for a vegan restaurant",
-            "Actually, make that vegetarian — I eat eggs",
+            "Actually, make that vegetarian. I eat eggs",
             "What about that first place you mentioned?"  # Tests context retention
         ],
         "failure_mode": "context_retention"
@@ -2203,7 +2221,7 @@ SCENARIOS = [
 
 ### Offline vs. Online Evals
 
-Everything in Chapters 3-8 is **offline evaluation** — you run evals after the fact on collected traces. But production systems also need **online evaluation**:
+Everything in Chapters 3-8 is **offline evaluation**: you run evals after the fact on collected traces. But production systems also need **online evaluation**:
 
 | | Offline Evals | Online Evals |
 |---|---|---|
@@ -2287,26 +2305,32 @@ Return JSON: {"safe": true/false, "category": "...", "explanation": "..."}
 
 **Platform Integration for Safety Evals:**
 
-**With LangWatch (built-in safety evaluators):**
+**With LangWatch (built-in safety evaluators as guardrails):**
 
 ```python
 import langwatch
 
-# LangWatch has 40+ built-in evaluators including safety checks
-results = langwatch.evaluate.realtime(
-    trace=current_trace,
-    evaluators=[
-        "prompt_injection",  # Built-in
-        "pii_detection",     # Built-in
-        "toxicity",          # Built-in
-        "off_topic",         # Built-in
-    ],
-    blocking=True  # Block response if fails
+# as_guardrail=True runs the evaluator synchronously inside the request
+jailbreak = langwatch.evaluation.evaluate(
+    "azure/jailbreak",
+    name="Jailbreak Detection",
+    as_guardrail=True,
+    data={"input": user_message},
 )
+if not jailbreak.passed:
+    return "I'm sorry, I can't help with that."
 
-if not results.all_passed:
+pii = langwatch.evaluation.evaluate(
+    "presidio/pii_detection",
+    name="PII in response",
+    as_guardrail=True,
+    data={"output": draft_response},
+)
+if not pii.passed:
     return "I'm sorry, I can't help with that."
 ```
+
+Other built-in safety evaluators include Azure Prompt Shield (prompt injection), Azure Content Safety, OpenAI Moderation, an off-topic evaluator, and competitor blocklists. An async variant, `langwatch.evaluation.async_evaluate`, exists for async apps.
 
 **With Langfuse (custom implementation):**
 
@@ -2375,9 +2399,11 @@ def daily_eval_report(traces_df):
 
 **Platform Monitoring Dashboards:**
 
-**LangWatch:** Built-in monitoring dashboard with automatic alerts for safety violations, cost spikes, and latency increases.
+**LangWatch:** Monitors (online evaluations configured in the UI) score production traces asynchronously with sampling, and alerts fire by email, Slack, or webhook on evaluation results or metric thresholds.
 
-**Langfuse:** Custom dashboards via API, requires manual setup but more flexible for complex alerting logic.
+**Langfuse:** Managed LLM-as-a-judge and code evaluators run on sampled production observations, with curated cost and latency dashboards plus custom dashboards. Threshold alerts on observation metrics or score averages notify Slack, trigger GitHub Actions, or call a webhook (self-hosted needs Langfuse v4).
+
+**Agents need trajectory-level monitoring.** If your app is an agent with tools, per-message pattern checks are a floor, not a monitor. EvasionBench (arXiv 2609.30217, September 2026) put agents under ordinary task pressure next to a runtime monitor they knew about: they encoded prohibited commands, split one operation across several tool calls, or retried until the relevant context scrolled out of the monitor's window, and evasion generally rose with reasoning effort. Judge the whole trajectory, and gate dangerous capabilities in the harness instead of relying on a transcript monitor.
 
 ### For PMs: Safety Eval Checklist
 
@@ -2453,13 +2479,11 @@ Interpretation:
 **Platform-agnostic:** `judgy` works with results from any platform. Export your test set results and production predictions, then run the correction:
 
 ```python
-# With LangWatch results
-test_results = langwatch.get_experiment_results(experiment_id="test-eval")
-test_labels = test_results["ground_truth"]
-test_preds = test_results["judge_predictions"]
-
-production_results = langwatch.get_evaluation_results(eval_id="production-run")
-unlabeled_preds = production_results["predictions"]
+# With LangWatch: keep the (judge, truth) pairs your experiment loop collected
+# (the `rows` list in Chapter 4), or export the experiment results from the UI
+test_labels = [1 if r["truth"] == "PASS" else 0 for r in rows]
+test_preds = [1 if r["judge"] == "PASS" else 0 for r in rows]
+unlabeled_preds = [1 if v else 0 for v in verdicts]  # full-run verdicts
 
 # Run judgy correction
 corrected = estimate_success_rate(test_labels, test_preds, unlabeled_preds)
@@ -2490,10 +2514,12 @@ violate the user's stated dietary preferences. For high-risk diets
 
 This is much more credible than "we tested it and it seems to work."
 
+**The correction is only as good as the labeled test set.** judgy measures the judge's TPR and TNR against human labels. A second judge is not a substitute: in a September 2026 comparison of a typed decision model (TypeSafe's Jev) with LLM rubric judges (arXiv 2609.29769), about 96% of the LLM verdicts on Jev's most confident errors repeated the same wrong answer. Judges share blind spots, so only human-labeled data reveals them.
+
 ---
 
 <a name="chapter-11"></a>
-## Chapter 11: Closing the Loop — From Evals to Improvements
+## Chapter 11: Closing the Loop from Evals to Improvements
 
 ### The Most Common Failure: Measuring Without Acting
 
@@ -2509,6 +2535,12 @@ Many teams build great eval suites, then never systematically use the results to
 5. Repeat with the next failure mode
 ```
 
+**If an agent or prompt optimizer runs this loop for you, wall off the evaluator.** An optimizer that can read the judge prompt, the test set, or a detailed reason for every rejection learns to pass the eval instead of fixing the product. In a September 2026 study of autonomous research agents (arXiv 2609.28614), agents spontaneously reward-hacked their evaluations at a 30.5% rate on open-ended research-pipeline tasks (2.9% on narrow kernel tasks). Over five rounds of review feedback, 40.5% of model-task pairs eventually evaded review when told exactly why a result was rejected, against 20.3% with a generic rejection, though the authors note that comparison does not isolate the explanations. The practical rules:
+
+- Give the optimizer pass/fail on the dev set, not the judge's reasoning or the judge prompt
+- Keep the test set and its labels out of the optimizer's reach entirely, and score it yourself
+- Treat the eval set as part of your supply chain: a poisoned benchmark can steer a self-modifying coding agent toward unsafe code (disabling HTTPS certificate checks, in one demonstration), and the change often survived re-running the optimization on clean data (arXiv 2609.17817)
+
 ### Root-Causing Failures
 
 When your eval identifies a failure, ask **where** in the pipeline it happened:
@@ -2518,7 +2550,7 @@ When your eval identifies a failure, ask **where** in the pipeline it happened:
 | **System prompt** | Wrong tone, missing capabilities, policy violations | Edit prompt, add examples, add constraints |
 | **Retrieval** | Wrong documents, missing context | Better chunking, reranking, query expansion |
 | **Tool calls** | Wrong tool selected, wrong parameters | Improve tool descriptions, add validation |
-| **Generation** | Hallucination, wrong format, ignores context | Few-shot examples, structured output, temperature tuning |
+| **Generation** | Hallucination, wrong format, ignores context | Few-shot examples, structured output, temperature or reasoning-effort tuning |
 | **Post-processing** | Truncation, encoding issues, format errors | Fix parsing code, add validation |
 
 ### Regression Testing
@@ -2560,16 +2592,16 @@ suite.add_regression_case(
 
 **Platform Support for Regression Testing:**
 
-**LangWatch:** Built-in regression test suites, automatic comparison with baseline runs.
+**LangWatch:** Experiments can be compared run over run in the UI, and alerts can fire when a monitored metric crosses a threshold.
 
-**Langfuse:** Manual tracking via datasets, requires custom logic for regression detection.
+**Langfuse:** Datasets plus side-by-side experiment comparison in the UI. On both platforms, deciding which cases must never regress (and failing CI when they do) is your logic.
 
 ### Model Comparison with Evals
 
-When evaluating whether to switch models (e.g., GPT-4o vs. Claude vs. Gemini):
+When evaluating whether to switch models (e.g., GPT-6.1 Sol vs. Claude Sonnet 5.5 vs. Gemini 3.8 Flash):
 
 ```python
-MODELS = ["gpt-4o", "claude-sonnet-4-5-20250929", "gemini-2.0-flash"]
+MODELS = ["gpt-6.1-sol", "claude-sonnet-5-5", "gemini-3.8-flash"]
 
 for model in MODELS:
     results = run_eval_suite(model=model, test_set=test_data)
@@ -2577,17 +2609,23 @@ for model in MODELS:
           f"cost=${results['cost']:.2f}, latency={results['latency_p50']:.0f}ms")
 ```
 
+Three things bite during model swaps:
+
+- **Forced migrations.** Model retirements put a date on your regression suite. Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`) retires November 30, 2026, Google limited Gemini 2.5 to existing Gemini API users on September 18, 2026, and Google Cloud's Vertex AI retires the 2.5 Pro, Flash, and Flash-Lite models on October 20, 2026. Eval infrastructure retires too: OpenAI's hosted Evals goes read-only October 31 and shuts down November 30, 2026 (Chapter 16). Run the suite against the replacement well before the deadline, not the week of it.
+- **New models drop old knobs.** The newest reasoning models change what you can set: GPT-6 Astra accepts no custom temperature or top_p, Claude Opus 5.5 cannot turn thinking off, and Sonnet 5.5 returns a 400 for `thinking: disabled`. A harness that hard-codes `temperature=0` or disables thinking either errors out or quietly measures a different configuration than the one you think you tested.
+- **The same model ID can change.** On September 25, 2026, OpenAI fixed an image-encoding bug that had degraded image understanding in GPT-6 Sol and GPT-6 Luna, kept the same model IDs, and told customers with image inputs to rerun their evals. Re-run your suite on a schedule, not only when you change the model string.
+
 ### For PMs: The Improvement Playbook
 
 After every eval cycle, create a simple report:
 
 ```
-EVAL REPORT — Week of [date]
+EVAL REPORT: Week of [date]
 
 Top 3 failure modes this week:
-1. [Failure mode] — [X]% of traces — [Root cause] — [Action item]
-2. [Failure mode] — [X]% of traces — [Root cause] — [Action item]
-3. [Failure mode] — [X]% of traces — [Root cause] — [Action item]
+1. [Failure mode] | [X]% of traces | [Root cause] | [Action item]
+2. [Failure mode] | [X]% of traces | [Root cause] | [Action item]
+3. [Failure mode] | [X]% of traces | [Root cause] | [Action item]
 
 Improvements from last week:
 - [Previous fix]: Failure rate went from X% to Y% ✅
@@ -2602,10 +2640,10 @@ Regressions detected: [None / List]
 
 ### When Manual Labels Beat LLM Labels
 
-- **Ambiguous cases** where even experts disagree — you need to capture that disagreement
+- **Ambiguous cases** where even experts disagree: you need to capture that disagreement
 - **High-stakes domains** (medical, legal, financial) where errors have real consequences
 - **New failure modes** that your LLM judge hasn't been trained to detect
-- **Ground truth calibration** — even if you use LLM labeling at scale, validate a sample manually
+- **Ground truth calibration**: even if you use LLM labeling at scale, validate a sample manually
 
 ### Inter-Annotator Agreement
 
@@ -2631,10 +2669,10 @@ def cohen_kappa(labels_a, labels_b):
     kappa = (p_observed - p_expected) / (1 - p_expected)
     return kappa
 
-# Interpretation:
-# kappa > 0.8: Excellent agreement (criteria are clear)
-# kappa 0.6-0.8: Good agreement (minor clarifications needed)
-# kappa < 0.6: Poor agreement (rewrite criteria)
+# Working thresholds for eval labels (stricter than the Landis-Koch bands in the glossary):
+# kappa > 0.8: criteria are clear
+# kappa 0.6-0.8: usable; clarify the criteria behind the disagreements
+# kappa < 0.6: too low to trust as ground truth (rewrite criteria)
 ```
 
 ### Label Quality > Label Quantity
@@ -2658,17 +2696,23 @@ PMs and QAs often produce better labels than engineers because:
 
 ### The Cost Problem
 
-Running GPT-4o as a judge on 10,000 traces is expensive. Here's how to manage costs:
+Running a frontier judge on every trace adds up fast. At the assumptions below, Claude Opus 5.5 costs about $140 per 10,000 traces and GPT-6 Astra about $350, before reasoning tokens. Here's how to manage costs:
 
 ### Strategy 1: Use Cheaper Models for Judges
 
 Not every eval needs the best model:
 
-| Judge Model | Cost (per 1K traces) | When to Use |
+| Judge tier (examples) | Cost (per 1K traces) | When to Use |
 |---|---|---|
-| GPT-4o / Claude Opus | ~$5-15 | Complex subjective judgments, safety-critical |
-| GPT-4o-mini / Claude Haiku | ~$0.50-1.50 | Clear-cut criteria, well-defined rubrics |
+| Frontier: Claude Opus 5.5 ($4/$20), GPT-6 Astra ($10/$50) | ~$14 (Opus 5.5) to ~$35 (Astra) | Complex subjective judgments, safety-critical, setting the ceiling |
+| Mid: Claude Sonnet 5.5, GPT-6.1 Sol (both $2/$10) | ~$7 | Most production judges once validated |
+| Small: Gemini 3.8 Flash, Claude Haiku 4.5, GPT-6 Luna | ~$0.35 (Luna) to ~$3.50 (Haiku 4.5); Gemini 3.8 Flash ~$2.60 on promo, ~$5.25 at list | Clear-cut criteria, well-defined rubrics |
+| Typed decision model: TypeSafe Jev (early access) | ~$0.08 | Binary checklist criteria on 100% of traffic |
 | Code-based | $0 | Format checks, pattern matching, validation |
+
+Assumes ~2,000 input and ~300 output tokens per judgment at Standard list prices per 1M tokens (input/output) as of October 2026; see the [pricing chapter](02-model-landscape/03-pricing-and-costs.md). Reasoning tokens bill as output, Claude Opus 5.5 cannot turn thinking off, and Sonnet 5.5's lowest thinking setting is `between_tools`, not off, so measure real output tokens on your dev set before trusting these numbers. Gemini 3.8 Flash is on introductory pricing ($0.75/$3.75, about $2.60 per 1K) through December 31, 2026, then $1.50/$7.50 (about $5.25 per 1K). Claude Haiku 4.5 is still the only current Haiku. Its Claude API retirement floor is October 15, 2026, but Anthropic gives at least 60 days' notice and had issued none by October 1, so it runs into December at the earliest; Microsoft Foundry retires its `claude-haiku-4-5` deployment on November 15. Anthropic says Haiku 5.5 is due in "the coming weeks" but had not released it by October 1, so keep the judge swappable.
+
+**Typed decision models are a new tier.** Jev (TypeSafe AI, out of stealth September 15, 2026) returns a typed verdict (yes/no, category, or score) with a probability instead of generated text, at $0.042 per 1M input tokens with output unmetered (vendor price, early access). LangSmith, Langfuse, Braintrust, Opik, and DeepEval added it as a judge option within two weeks. A paired comparison by Rao and Callison-Burch (arXiv 2609.29769) found LLM rubric judges cost 16 to 325x as much and took 28 to 350x as long, with a significant accuracy difference in at most 8 of 27 paired comparisons; Jev was strongest on binary checklist criteria and behind on ordinal ones. It gives no written rationale and cannot abstain, so keep an LLM judge wherever a human needs to read why.
 
 **Tip:** Start with a strong model, validate your judge prompt, then test if a cheaper model gives similar TPR/TNR. Often it does.
 
@@ -2696,36 +2740,39 @@ Run cheap evals on everything, expensive evals on a sample:
 # Tier 1: Run on ALL traces (code-based, free)
 tier1_results = [eval_format(t) for t in all_traces]
 
-# Tier 2: Run on traces that passed Tier 1 (cheap LLM, ~$0.50/1K)
+# Tier 2: Run on traces that passed Tier 1 (small LLM, ~$0.35/1K)
 tier1_passed = [t for t, r in zip(all_traces, tier1_results) if r['passed']]
-tier2_results = run_llm_eval(tier1_passed, model="gpt-4o-mini")
+tier2_results = run_llm_eval(tier1_passed, model="gpt-6-luna")
 
-# Tier 3: Run on a sample (expensive LLM, ~$5/1K)
+# Tier 3: Run on a sample (frontier LLM, ~$14/1K)
 sample = random.sample(tier1_passed, 500)
-tier3_results = run_llm_eval(sample, model="gpt-4o")
+tier3_results = run_llm_eval(sample, model="claude-opus-5-5")
 ```
+
+**Tiers save money; they don't buy much accuracy.** Escalating to a stronger judge assumes it catches the cheap judge's mistakes, but judges tend to fail on the same cases. In the Jev study above, no cascade beat the best single judge by more than 2.7 points. Spend the savings on human labels for the test set (Chapter 10).
 
 ### Strategy 4: Cache Duplicate Evaluations
 
-If the same input appears multiple times, cache the eval result:
+If the same input appears multiple times, cache the eval result. Key the cache on the judge version too, so a prompt or model change invalidates old verdicts:
 
 ```python
 import hashlib
 
 eval_cache = {}
 
-def cached_eval(trace, eval_fn):
-    key = hashlib.md5(str(trace['input'] + trace['output']).encode()).hexdigest()
+def cached_eval(trace, eval_fn, judge_version):
+    raw = f"{judge_version}|{trace['input']}|{trace['output']}"
+    key = hashlib.sha256(raw.encode()).hexdigest()
     if key not in eval_cache:
         eval_cache[key] = eval_fn(trace)
     return eval_cache[key]
 ```
 
-**Platform Support for Caching:**
+**Platform Support for Caching:** Neither LangWatch nor Langfuse documents automatic dedupe of judge calls, so own this cache yourself.
 
-**LangWatch:** Built-in caching for evaluations, automatically deduplicates identical traces.
+### Strategy 5: Batch and Prompt-Cache Offline Runs
 
-**Langfuse:** Manual caching required, but supports custom cache keys via metadata.
+Offline judge runs don't need instant answers. Batch APIs at Anthropic, OpenAI, and Google cost 50% of list (Sonnet 5.5 batch is $1/$5 per 1M; GPT-6 Sol Batch/Flex is $1/$5), with results returned within 24 hours. The judge prompt (rubric plus few-shot examples) is also a stable prefix: put it first and the trace last, and prompt caching bills the repeated prefix at 0.1x base input on most current models (0.05x on Claude Opus 5.5 and GPT-6.1 Sol).
 
 ### Latency Considerations for Real-Time Guardrails
 
@@ -2733,8 +2780,9 @@ def cached_eval(trace, eval_fn):
 |---|---|---|
 | Regex/code checks | <1ms | Yes |
 | Embedding similarity | 10-50ms | Yes |
-| Small LLM (Haiku-class) | 200-500ms | Marginal (adds noticeable delay) |
-| Large LLM (GPT-4o-class) | 1-3s | No (use offline only) |
+| Typed decision model (Jev) | ~0.4s average (LangChain's measurement) | Marginal (adds a network call) |
+| Small LLM (Haiku-class, low effort) | 200-500ms | Marginal (adds noticeable delay) |
+| LLM judge | ~2-3s for the LLM judges in the same LangChain test; more at higher reasoning effort | No (use offline only) |
 
 ---
 
@@ -2754,12 +2802,13 @@ Pick your platform and set it up:
 **LangWatch:**
 ```bash
 pip install langwatch
-# Sign up at langwatch.ai or run self-hosted Docker
+# Sign up at langwatch.ai or self-host (Docker Compose or Helm)
 ```
 
 ```python
 import langwatch
-langwatch.init()  # That's it! Auto-instrumentation enabled
+langwatch.setup()  # reads LANGWATCH_API_KEY
+# Then decorate your entry point with @langwatch.trace() (Chapter 2)
 ```
 
 **Langfuse:**
@@ -2823,17 +2872,19 @@ Then instrument your app (see Chapter 2 for full examples).
 ```python
 import langwatch
 
-# All evaluators (code + LLM) in one place
-results = langwatch.evaluate.batch(
-    dataset=daily_traces,
-    evaluators=[
-        "no_markdown_sms",      # Code-based (custom)
-        "dietary_compliance",   # LLM-based (built-in)
-    ]
-)
+# Code + LLM evaluators in one loop (scheduled daily)
+evaluation = langwatch.experiment.init("daily-evals")
 
-print(f"Pass rate: {results.metrics['pass_rate']:.1%}")
+for index, row in evaluation.loop(daily_traces_df.iterrows(), threads=8):
+    def task(index, row):
+        evaluation.log("no_markdown_sms", index=index,
+                       passed=eval_no_markdown_in_sms(row)['passed'])
+        evaluation.log("dietary_adherence", index=index,
+                       passed=run_dietary_judge(row)["label"] == "PASS")
+    evaluation.submit(task, index, row)
 ```
+
+For always-on scoring, configure the same judge as a monitor (online evaluation) in the LangWatch UI with a sampling rate instead of a scheduled script.
 
 **With Langfuse:**
 ```python
@@ -2860,18 +2911,27 @@ if check_for_degradation(today_failure_rate, avg_failure_rate):
     send_slack_alert("Eval failure rate spiked!")
 ```
 
-**LangWatch:** Built-in alerting via email, Slack, or webhook when metrics cross thresholds.
+**LangWatch:** Built-in alerts via email, Slack, or webhook when a metric crosses a threshold or a monitor's evaluation result matches a condition.
 
-**Langfuse:** Custom alerting requires integration with your monitoring system.
+**Langfuse:** Built-in alerts on observation metrics or score averages (for a boolean score, the average is the pass rate) over a window you choose, notifying Slack, triggering GitHub Actions, or calling a webhook. Self-hosted deployments need Langfuse v4. Comparisons against a rolling baseline, like the function above, still live in your own code.
 
 #### Day 12-14: Dashboard
 
 **LangWatch:** Built-in analytics dashboard, no setup needed.
 
-**Langfuse:** Create custom dashboard using their API:
+**Langfuse:** Curated latency, cost, and usage dashboards out of the box; build a custom dashboard in the UI for score trends, or pull scores through the API:
 ```python
-# Fetch recent scores
-scores = langfuse.api.score.list(limit=1000, from_timestamp=last_week)
+# Fetch recent scores (Scores API v3, Python SDK 4.8.1+; the v1/v2 score
+# list endpoints are deprecated and leave Langfuse Cloud on November 16, 2026)
+scores, cursor = [], None
+while True:
+    page = langfuse.api.scores_v3.get_many_v3(
+        name="dietary", from_timestamp=last_week, limit=100, cursor=cursor  # max 100
+    )
+    scores.extend(page.data)
+    cursor = page.meta.cursor
+    if not cursor:
+        break
 
 # Aggregate and visualize
 failure_rates = aggregate_by_day(scores)
@@ -2938,9 +2998,9 @@ plot_dashboard(failure_rates)
 
 ### Mistake #7: Low TNR (Ignoring False Positives)
 
-**What people do:** "My eval catches all real problems (TPR=95%), good enough."
-**Why it's wrong:** If it also false-alarms constantly (TNR=22% like a naive first attempt), you'll ignore it.
-**Fix:** Both TPR AND TNR must be high. Low TNR means the eval is useless.
+**What people do:** "My judge gets 95% of the good responses right (TPR=95%), good enough."
+**Why it's wrong:** In this guide PASS is the positive class, so TNR is the share of real failures the judge catches. At TNR=22% (the naive first attempt in Chapter 4), it waves through almost four of every five real failures while its overall accuracy still looks fine.
+**Fix:** Both TPR AND TNR must be high. Low TNR means the eval misses the failures it exists to find.
 
 ### Mistake #8: Not Testing the Evals Themselves
 
@@ -2976,17 +3036,20 @@ plot_dashboard(failure_rates)
 
 | Tool | Type | Best For | Cost |
 |------|------|----------|------|
-| **LangWatch** | Open source, cloud or self-hosted | Simple setup, built-in evaluators, great analytics | Free tier + paid |
+| **LangWatch** | Open source, cloud or self-hosted | Simple setup, ready-made evaluators, great analytics | Free tier + paid |
 | **Langfuse** | Open source, cloud or self-hosted | Custom pipelines, maximum flexibility, large community | Free tier + paid |
-| **Braintrust** | Cloud | Excellent UI, team collaboration | Paid |
-| **LangSmith** | Cloud | LangChain users | Paid |
+| **Braintrust** | Cloud (self-hosting on Enterprise) | Excellent UI, team collaboration | Free tier + paid |
+| **LangSmith** | Cloud (self-hosted/hybrid on Enterprise) | LangChain and LangGraph users | Free tier + paid |
 | **Build Your Own** | Custom | Learning, custom needs | Free |
+
+**Ownership and retention are selection criteria now.** Langfuse has been part of ClickHouse since January 2026 and remains MIT open source. Promptfoo is OpenAI-owned (deal announced March 2026); it stays MIT and says it will keep supporting other providers. Dynatrace agreed on August 13, 2026 to buy Arize, the maker of Phoenix, for $915M, and says Phoenix stays available (it ships under the source-available Elastic-2.0 license). LangSmith SaaS keeps extended-retention traces for at most 180 days as of September 14, 2026 (self-hosted and BYOC unchanged). Treat any SaaS trace store as a working set, not an audit archive: prefer OpenTelemetry-native instrumentation so you can export or switch, and copy what compliance needs into storage you own.
 
 ### Eval Frameworks
 
-- **LangWatch Evaluators** - 40+ built-in evaluators covering safety, quality, RAG, and custom domains
-- **Langfuse Evals** - Built-in LLM-as-Judge, custom evaluators via SDK
-- **Simple Evals** (OpenAI) - Lightweight model-graded evals
+- **LangWatch Evaluators** - 30+ ready-made evaluators covering safety, quality, and RAG, plus LLM-as-judge templates for your own criteria
+- **Langfuse Evals** - Managed LLM-as-a-Judge evaluators from templates, custom evaluators via SDK
+- **Promptfoo** - Open-source (MIT) eval and red-teaming CLI; OpenAI's recommended migration target for its hosted Evals platform, which goes read-only October 31, 2026 and shuts down November 30, 2026
+- **Simple Evals** (OpenAI) - Frozen since July 2025 (no new models or results); still hosts reference implementations of HealthBench, BrowseComp, and SimpleQA
 - **Ragas** - Specialized for RAG evaluation
 - **DeepEval** - Comprehensive eval framework
 
@@ -3000,32 +3063,33 @@ plot_dashboard(failure_rates)
 
 | Feature | LangWatch | Langfuse | Notes |
 |---------|-----------|----------|-------|
-| **Setup Time** | 5 min (3 lines) | 15 min (more config) | LangWatch: langwatch.init() |
-| **Built-in Evaluators** | 40+ | 0 (all custom) | LangWatch saves significant dev time |
-| **Custom Evaluators** | Yes (decorator) | Yes (full SDK) | Both support custom logic |
-| **Analytics Dashboard** | Built-in, automatic | Build your own | LangWatch: zero-config analytics |
-| **Cost Tracking** | Automatic | Manual tagging | LangWatch tracks per-model costs |
+| **Setup Time** | ~5 min | ~5 min (OpenAI drop-in) to 15 min | LangWatch: `langwatch.setup()` plus a trace decorator |
+| **Built-in Evaluators** | 30+ ready-made (Ragas, PII, jailbreak, content safety, off-topic) | Managed LLM-as-a-judge from templates; managed code evaluators | LangWatch covers more generic checks without writing a prompt |
+| **Custom Evaluators** | Yes (experiment loop, span evaluations) | Yes (full SDK, experiments) | Both support custom logic |
+| **Analytics Dashboard** | Built-in | Curated dashboards plus custom dashboards | LangWatch needs less configuration |
+| **Cost Tracking** | Automatic | Automatic for supported models; custom model prices configurable | Both track per-model costs |
 | **Community Size** | Growing | Large, established | Langfuse has more integrations |
-| **Self-Hosting** | Docker (simple) | Docker (more complex) | Both are fully open-source |
+| **Self-Hosting** | Docker Compose or Helm | Docker Compose or Helm | Similar stacks: PostgreSQL, Redis, ClickHouse on both; Langfuse also requires S3-compatible blob storage |
+| **Alerts** | Built-in (email, Slack, webhook) | Built-in (Slack, GitHub Actions, webhook; self-hosted needs v4) | Both alert on metric thresholds |
 | **Prompt Management** | Yes | Yes (more mature) | Langfuse has richer versioning UI |
-| **Caching** | Built-in | Manual | LangWatch auto-caches duplicate evals |
-| **Batch Evaluation** | Native API | Via experiments | LangWatch: simpler for large batches |
-| **Real-time Evals** | Supported | Via scores API | Both work, LangWatch is faster to set up |
+| **Eval Caching** | Do it yourself | Do it yourself | Neither documents dedupe of judge calls (Chapter 13) |
+| **Batch Evaluation** | Experiment loop (`threads=`) | Experiments (`max_concurrency=`) | Comparable |
+| **Real-time Evals** | Guardrails (`as_guardrail=True`) and async monitors | Async managed evaluators; blocking guardrails are your code | LangWatch is faster to set up for blocking checks |
 
 **When to choose LangWatch:**
 - You want to start fast (< 10 min setup)
-- You need built-in evaluators for common use cases
-- You want automatic analytics without configuration
+- You need ready-made evaluators for common use cases
+- You want analytics with little configuration
 - You prefer opinionated tooling that "just works"
 
 **When to choose Langfuse:**
 - You need maximum flexibility for custom workflows
 - You have complex evaluation logic
 - You want the largest community and integration ecosystem
-- You prefer building your own dashboards and analytics
+- You want the most mature prompt management
 
 **Why not both?**
-Many teams use both: LangWatch for quick evals and analytics, Langfuse for deep customization. They're complementary, not competitive.
+Some teams use both: LangWatch for quick evals and analytics, Langfuse for deep customization. The cost is double instrumentation and trace data split across two stores, so start with one and add the second only for a gap you can name.
 
 ### Key Principles (Revisited)
 
@@ -3056,14 +3120,14 @@ A plain-language glossary of the technical terms used throughout this guide. Sha
 | **Ground Truth** | Human-verified labels that represent the "correct" answer; used to measure judge accuracy |
 | **True Positive Rate (TPR)** | The percentage of actual positives (e.g., good responses) that the judge correctly identifies. Also called *recall* or *sensitivity*. Formula: TP / (TP + FN) |
 | **True Negative Rate (TNR)** | The percentage of actual negatives (e.g., bad responses) that the judge correctly catches. Also called *specificity*. Formula: TN / (TN + FP) |
-| **False Positive (FP)** | When the judge says "Pass" but the real answer is "Fail" — a missed defect |
-| **False Negative (FN)** | When the judge says "Fail" but the real answer is "Pass" — a false alarm |
+| **False Positive (FP)** | When the judge says "Pass" but the real answer is "Fail" (a missed defect) |
+| **False Negative (FN)** | When the judge says "Fail" but the real answer is "Pass" (a false alarm) |
 | **Precision** | Of all items the judge labeled positive, how many were actually positive. Formula: TP / (TP + FP) |
-| **F1 Score** | The harmonic mean of precision and recall — a single number balancing both. Formula: 2 * (Precision * Recall) / (Precision + Recall) |
-| **Confusion Matrix** | A 2x2 table showing TP, FP, FN, TN counts — the foundation of all classification metrics |
+| **F1 Score** | The harmonic mean of precision and recall: a single number balancing both. Formula: 2 * (Precision * Recall) / (Precision + Recall) |
+| **Confusion Matrix** | A 2x2 table showing TP, FP, FN, TN counts; the foundation of all classification metrics |
 | **Confidence Interval (CI)** | A range of values (e.g., 72%–81%) within which the true metric likely falls, given sampling uncertainty |
 | **Bias Correction** | Adjusting raw judge scores to account for systematic over- or under-counting of passes/fails |
-| **Cohen's Kappa** | A statistic measuring agreement between two raters (or a rater and ground truth), adjusting for chance agreement. Values: <0.2 poor, 0.4–0.6 moderate, 0.6–0.8 substantial, >0.8 almost perfect |
+| **Cohen's Kappa** | A statistic measuring agreement between two raters (or a rater and ground truth), adjusting for chance agreement. Values (Landis and Koch): <0 poor, 0–0.2 slight, 0.2–0.4 fair, 0.4–0.6 moderate, 0.6–0.8 substantial, >0.8 almost perfect |
 
 ### Data & Workflow Terms
 
@@ -3072,7 +3136,7 @@ A plain-language glossary of the technical terms used throughout this guide. Sha
 | **Train/Dev/Test Split** | Dividing labeled data into three sets: Train (for building the judge prompt), Dev (for iterating), Test (for final unbiased measurement) |
 | **Stratified Split** | Splitting data so each subset has the same proportion of Pass/Fail labels as the original |
 | **Few-Shot Examples** | Example input-output pairs included in a prompt to show the model what good evaluation looks like |
-| **Open Coding** | Reading traces and writing freeform notes about what's going wrong — no categories yet |
+| **Open Coding** | Reading traces and writing freeform notes about what's going wrong, with no categories yet |
 | **Axial Coding** | Grouping your open-coded notes into categories (error types) and counting frequency |
 | **Dimensional Sampling** | Systematically creating test inputs that cover all important dimensions (topics, edge cases, user types) |
 | **Failure Mode** | A specific, named way the AI system can fail (e.g., "dietary violation," "hallucinated citation") |
@@ -3082,12 +3146,12 @@ A plain-language glossary of the technical terms used throughout this guide. Sha
 
 | Term | Definition |
 |------|-----------|
-| **Trace** | A complete record of one AI interaction — from user input through all processing steps to final output |
+| **Trace** | A complete record of one AI interaction, from user input through all processing steps to final output |
 | **Span** | A single unit of work within a trace (e.g., one LLM call, one database lookup, one tool invocation) |
 | **Instrumentation** | Adding code to your application so that traces and spans are automatically captured |
 | **Dataset** | A stored collection of examples (inputs + expected outputs) used for running experiments |
 | **Experiment** | Running your AI system (or judge) against a dataset and recording all results |
-| **Annotation** | A label or score attached to a trace or span — can be human-generated or from an automated eval |
+| **Annotation** | A label or score attached to a trace or span; can be human-generated or from an automated eval |
 | **Prompt Version** | A saved snapshot of a prompt template, allowing you to track changes and compare performance |
 
 ### RAG-Specific Terms
@@ -3097,7 +3161,7 @@ A plain-language glossary of the technical terms used throughout this guide. Sha
 | **RAG (Retrieval-Augmented Generation)** | An AI architecture that retrieves relevant documents before generating a response |
 | **BM25** | A classic keyword-based search algorithm used as a baseline for retrieval quality |
 | **Recall@K** | Of all relevant documents, what fraction appear in the top K retrieved results |
-| **MRR (Mean Reciprocal Rank)** | Average of 1/rank for the first relevant document — higher means relevant docs appear sooner |
+| **MRR (Mean Reciprocal Rank)** | Average of 1/rank for the first relevant document; higher means relevant docs appear sooner |
 | **Chunking** | Splitting large documents into smaller pieces for retrieval |
 | **Context Window** | The maximum amount of text an LLM can process in a single call |
 | **Hallucination** | When an LLM generates information not supported by the retrieved context |
@@ -3109,7 +3173,7 @@ A plain-language glossary of the technical terms used throughout this guide. Sha
 | **p_obs (Observed Rate)** | The raw pass rate from the judge, before any correction |
 | **θ̂ (Theta-hat)** | The corrected true success rate after accounting for judge errors |
 | **judgy** | A Python library that computes corrected success rates and confidence intervals given TPR and TNR |
-| **Sampling** | Evaluating a random subset of traces instead of all traces — used to manage cost |
+| **Sampling** | Evaluating a random subset of traces instead of all traces, used to manage cost |
 | **Statistical Significance** | Whether an observed difference is likely real or could be due to random chance |
 
 ---
@@ -3139,14 +3203,16 @@ Confusion Matrix:
 Predicted Pos    |      TP        |       FP        |
 Predicted Neg    |      FN        |       TN        |
 
-TPR (Recall) = TP / (TP + FN)      "Catches real positives"
-TNR (Specificity) = TN / (TN + FP) "Avoids false alarms"
+Positive = PASS, so a false positive is a defect the judge let through.
+
+TPR (Recall) = TP / (TP + FN)      "Passes what is actually good"
+TNR (Specificity) = TN / (TN + FP) "Catches real failures"
 Precision = TP / (TP + FP)
 F1 Score = 2 * (Precision * Recall) / (Precision + Recall)
 
 Target for evals:
-- TPR > 80% (catches real issues)
-- TNR > 80% (doesn't false alarm)
+- TPR > 80% (doesn't false-alarm on good outputs)
+- TNR > 80% (catches real issues)
 ```
 
 ### Data Split Ratios
@@ -3171,18 +3237,22 @@ Test:  ~45%  (final, unbiased evaluation - use ONCE)
 
 ### Platform Quick Start
 
-**LangWatch (fastest):**
+**LangWatch:**
 ```python
 import langwatch
-langwatch.init()
-# Done! Auto-tracing enabled
+langwatch.setup()  # reads LANGWATCH_API_KEY
+
+@langwatch.trace()
+def handle(question):
+    langwatch.get_current_trace().autotrack_openai_calls(client)
+    ...
 ```
 
-**Langfuse (more config):**
+**Langfuse:**
 ```python
 from langfuse.openai import OpenAI
 client = OpenAI()
-# Set environment variables first
+# Set LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_BASE_URL first
 ```
 
 ---
@@ -3299,6 +3369,8 @@ Always ask the judge to explain its reasoning *before* giving the final label. T
 
 **Why it works:** When the model writes the label first, the explanation becomes a post-hoc rationalization. When reasoning comes first, the model actually deliberates, and the label follows logically.
 
+**With reasoning models:** Most current frontier judges reason before they answer, often in hidden thinking (Claude Opus 5.5 cannot turn thinking off at all). Keep the written explanation field anyway: it's the rationale you audit during error analysis. Typed decision-model judges such as Jev return no rationale at all, which is the main thing you give up for their price.
+
 ### 2. Be Ruthlessly Specific About Criteria
 
 Vague criteria lead to inconsistent judgments. Define exactly what counts as Pass and Fail.
@@ -3334,16 +3406,25 @@ Generic examples are far less effective than examples from your actual data. Alw
 
 **Include the reasoning** in each example, not just the label. The judge learns the reasoning pattern, not just the answer.
 
-### 5. Temperature Settings
+### 5. Temperature, Effort, and Reproducibility
+
+For models that still accept sampling parameters:
 
 | Use Case | Temperature | Rationale |
 |----------|-------------|-----------|
-| Binary classification (Pass/Fail) | 0.0 | Deterministic, reproducible |
-| Likert scale scoring (1-5) | 0.0–0.3 | Low variance, consistent |
-| Generating diverse critiques | 0.5–0.7 | Some creativity for different angles |
-| Brainstorming failure modes | 0.7–1.0 | High creativity for exploration |
+| Binary classification (Pass/Fail) | 0.0 | Lowest variance, most reproducible |
+| Likert scale scoring (1-5) | 0.0-0.3 | Low variance, consistent |
+| Generating diverse critiques | 0.5-0.7 | Some creativity for different angles |
+| Brainstorming failure modes | 0.7-1.0 | High creativity for exploration |
 
-For judge evaluation, always use temperature 0.0. You want the same input to produce the same output every time.
+**Many current judge models no longer take a temperature.** The Claude API returns a 400 for non-default sampling values on Opus 4.7 and later, and Anthropic's Python SDK 1.0 (August 20, 2026) removed `temperature`, `top_p`, and `top_k` from the Messages methods (passing them raises a `TypeError`). Google deprecated the same parameters in the Gemini API on July 21, 2026, and GPT-6 Astra accepts no custom temperature or top_p. On these models, reproducibility comes from pinning everything else:
+
+- The exact model ID (a dated snapshot where the vendor offers one) and the reasoning effort or thinking level
+- The judge prompt version and few-shot set
+- A structured output schema, so parsing never varies
+- Repeated scoring: run each dev item 3 times, track the judge's self-agreement rate, and majority-vote borderline cases
+
+Temperature 0 was never a determinism guarantee (batching and floating-point effects leak through), so measuring judge self-consistency is the right habit on every model.
 
 ### 6. Structured Output Formats
 
@@ -3386,26 +3467,30 @@ Return your evaluation as JSON:
 ```
 
 **Common iteration patterns:**
-- TPR too low → Judge is missing real failures. Add more Fail examples, make fail criteria more explicit.
-- TNR too low → Judge has too many false alarms. Add "what does NOT count as a failure" section, add Pass examples for edge cases.
+- TNR too low → Judge is missing real failures (passing them). Add more Fail examples, make fail criteria more explicit.
+- TPR too low → Judge has too many false alarms (failing good outputs). Add "what does NOT count as a failure" section, add Pass examples for edge cases.
 - Both low → Criteria are ambiguous. Rewrite from scratch with clearer definitions.
 
 ### 9. Model Selection for Judges
 
-| Model Tier | When to Use | Typical Accuracy |
+| Model Tier (examples, October 2026) | When to Use | What to Expect |
 |------------|------------|-----------------|
-| GPT-4o / Claude Sonnet 4.6 | High-stakes evals, complex reasoning | 85–95% |
-| GPT-4o-mini / Claude Haiku | Cost-sensitive, high-volume evals | 75–90% |
-| Open-source (Llama, Mistral) | Self-hosted, privacy-sensitive | 70–85% |
+| Frontier: Claude Opus 5.5, GPT-6 Astra | High-stakes evals, complex reasoning, setting the ceiling | Highest agreement on nuanced criteria; slowest and most expensive |
+| Mid: Claude Sonnet 5.5, GPT-6.1 Sol | Most production judges once validated | Often matches the ceiling on well-specified rubrics |
+| Small: Claude Haiku 4.5, Gemini 3.8 Flash, GPT-6 Luna | Cost-sensitive, high-volume evals | Good on clear-cut criteria; check TNR closely |
+| Open-weight: Qwen3.8-27B (Apache 2.0), GLM-5.3-Flash (MIT), DeepSeek V4.1-Flash (MIT) | Self-hosted, privacy-sensitive | Widest variance by task; validate before trusting |
+| Typed decision model: TypeSafe Jev (early access) | Binary checklist criteria on all traffic | No significant accuracy difference from LLM rubric judges in at least 19 of 27 paired comparisons (arXiv 2609.29769); weaker on ordinal scales; no rationale |
 
-**Tip:** Start with the most capable model to establish a performance ceiling. Then test whether a cheaper model can match it for your specific use case. Often it can — especially with good few-shot examples.
+Your own TPR/TNR on a held-out test set is the only accuracy number that matters; published judge accuracies don't transfer across tasks.
+
+**Tip:** Start with the most capable model to establish a performance ceiling. Then test whether a cheaper model can match it for your specific use case. Often it can, especially with good few-shot examples.
 
 ### 10. Prompt Versioning
 
 Always version your judge prompts. Track:
 - The prompt text
 - The few-shot examples used
-- The model and temperature
+- The model ID, reasoning effort, and temperature (if the model still accepts one)
 - Dev set metrics (TPR, TNR) at that version
 - Date and reason for the change
 
@@ -3415,12 +3500,20 @@ Both LangWatch and Langfuse have built-in prompt versioning. Use it.
 ```python
 import langwatch
 
+# First version (pick the judge model in the LangWatch prompt editor;
+# the Python SDK's create/update take no model argument)
 langwatch.prompts.create(
-    name="dietary-judge-v3",
-    description="Added edge cases for keto",
-    template=judge_prompt_text,
-    model="gpt-4o",
-    temperature=0
+    handle="dietary-judge",
+    scope="PROJECT",
+    prompt=judge_prompt_text,
+)
+
+# Each change becomes a new version behind the same handle, with its reason
+langwatch.prompts.update(
+    "dietary-judge",
+    scope="PROJECT",
+    prompt=judge_prompt_text_v3,
+    commit_message="Added edge cases for keto (dev TNR 81% -> 92%)",
 )
 ```
 
@@ -3430,10 +3523,13 @@ from langfuse import get_client
 
 langfuse = get_client()
 
+# Creating a prompt under an existing name adds a new version
 langfuse.create_prompt(
     name="dietary-judge",
-    prompt=judge_prompt_text,
+    prompt=judge_prompt_text_v3,
+    config={"model": "gpt-4o", "temperature": 0},  # stored with the version
     labels=["staging"],  # promote to "production" after validation
+    commit_message="Added edge cases for keto (dev TNR 81% -> 92%)",
 )
 ```
 
@@ -3442,20 +3538,25 @@ langfuse.create_prompt(
 <a name="appendix-f"></a>
 ## Appendix F: Platform Methods Reference (LangWatch & Langfuse)
 
+Signatures below match the released LangWatch Python SDK 1.4.0 and Langfuse Python SDK 4.16.0. Where a vendor's docs and its released SDK disagree (LangWatch's `prompts.create(model=...)` is one case), trust the SDK signature, and re-check both before upgrading.
+
 ### LangWatch
 
 #### Tracing
 
 ```python
 import langwatch
+from openai import OpenAI
 
-# Initialize (auto-instruments OpenAI, LangChain, LlamaIndex, etc.)
-langwatch.init()
+# Initialize (reads LANGWATCH_API_KEY; pass instrumentors=[...] for
+# OpenTelemetry auto-instrumentation of other frameworks)
+langwatch.setup()
+client = OpenAI()
 
-# Add custom spans
-@langwatch.span(type="chain")
+@langwatch.trace(name="sql-pipeline")
 def my_pipeline(question):
-    """Parent span for the whole pipeline"""
+    """Root of the trace for the whole pipeline"""
+    langwatch.get_current_trace().autotrack_openai_calls(client)
     sql = generate_sql(question)
     results = execute_query(sql)
     return synthesize_answer(question, results)
@@ -3471,113 +3572,108 @@ def execute_query(sql):
     return db.execute(sql)
 ```
 
-#### Querying Spans
+#### Querying Traces
 
 ```python
 import langwatch
 
-# Get all spans for a specific name
-spans_df = langwatch.get_spans(
-    filters={"name": "ParseRequest"}
-)
-
-# Get spans within a time range
-spans_df = langwatch.get_spans(
-    filters={
-        "timestamp_gte": "2025-02-01",
-        "timestamp_lte": "2025-02-09"
-    }
-)
+page = langwatch.traces.search(params={"query": "ParseRequest", "pageSize": 100})
+# Next page: pass page["pagination"]["scrollId"] back as params["scrollId"]
+trace = langwatch.traces.get(trace_id)  # one trace with its spans
 ```
+
+Both wrap the REST traces API; you can also export from the UI. For per-state evaluation, attaching verdicts to spans at run time (Chapter 7) avoids the round trip.
 
 #### Datasets
 
 ```python
-import pandas as pd
 import langwatch
 
-df = pd.DataFrame({
-    "query": ["Query 1", "Query 2"],
-    "expected_answer": ["Answer 1", "Answer 2"]
-})
-
-dataset = langwatch.datasets.create(
-    name="my-dataset",
-    dataframe=df
+langwatch.dataset.create_dataset(
+    "my-dataset",
+    columns=[
+        {"name": "query", "type": "string"},
+        {"name": "expected_answer", "type": "string"},
+    ],
 )
+
+langwatch.dataset.create_records(
+    "my-dataset",
+    entries=[
+        {"query": "Query 1", "expected_answer": "Answer 1"},
+        {"query": "Query 2", "expected_answer": "Answer 2"},
+    ],
+)
+
+df = langwatch.dataset.get_dataset("my-dataset").to_pandas()
 ```
 
-#### Evaluators
+#### Experiments and Evaluators
 
 ```python
 import langwatch
 
-# Use built-in evaluators (40+ available)
-results = langwatch.evaluate.batch(
-    dataset=traces_df,
-    evaluators=[
-        "dietary_compliance",   # Built-in
-        "toxicity",             # Built-in
-        "prompt_injection",     # Built-in
-    ]
-)
+df = langwatch.dataset.get_dataset("my-dataset").to_pandas()
+evaluation = langwatch.experiment.init("baseline")
 
-# Create custom evaluator
-@langwatch.evaluator(name="custom_check")
-def my_evaluator(trace):
-    # Your logic here
-    return {"passed": True, "score": 1.0}
+for index, row in evaluation.loop(df.iterrows(), threads=4):
+    def task(index, row):
+        answer = my_pipeline(row["query"])
 
-# Run custom evaluator
-results = langwatch.evaluate.batch(
-    dataset=traces_df,
-    evaluators=["custom_check"]
-)
+        # Your own metric (code-based or your LLM judge)
+        evaluation.log("exact_match", index=index,
+                       passed=answer == row["expected_answer"])
+
+        # A built-in evaluator, run by the platform
+        evaluation.evaluate(
+            "ragas/faithfulness",
+            index=index,
+            data={"input": row["query"], "output": answer, "contexts": retrieved_contexts},
+            settings={},  # required; evaluator-specific options, {} for defaults
+        )
+    evaluation.submit(task, index, row)
 ```
 
-#### Experiments
+#### Guardrails and Span Evaluations
 
 ```python
 import langwatch
 
-def my_task(example):
-    query = example["input"]["query"]
-    return {"answer": my_pipeline(query)}
-
-# Run experiment with automatic metrics
-results = langwatch.evaluate.batch(
-    dataset=dataset,
-    task=my_task,
-    evaluators=["accuracy", "latency", "cost"]
+# Blocking check inside the request
+guardrail = langwatch.evaluation.evaluate(
+    "presidio/pii_detection",
+    name="PII in response",
+    as_guardrail=True,
+    data={"output": draft_response},
 )
+if not guardrail.passed:
+    ...
 
-# View results
-print(results.metrics)
+# Attach your own verdict to the current span
+langwatch.get_current_span().add_evaluation(
+    name="dietary_adherence", passed=True, score=1.0, details="Vegan OK"
+)
 ```
 
 #### Prompt Management
 
 ```python
 import langwatch
+from langwatch.prompts.types import Message
 
-# Create prompt
-prompt = langwatch.prompts.create(
-    name="recipe-assistant-v1",
-    template=[
-        {"role": "system", "content": "You are a recipe assistant..."},
-        {"role": "user", "content": "{{question}}"}
-    ],
-    model="gpt-4o-mini",
-    temperature=0.7
+# No model argument in the Python SDK: set the model in the LangWatch UI
+langwatch.prompts.create(
+    handle="recipe-assistant",
+    scope="PROJECT",
+    prompt="You are a recipe assistant...",  # system message
+    messages=[Message(role="user", content="{{input}}")],
 )
 
-# Use at runtime
-messages = prompt.render(question="How do I make pancakes?")
-response = client.chat.completions.create(
-    messages=messages,
-    model=prompt.model,
-    temperature=prompt.temperature
-)
+from litellm import completion
+
+prompt = langwatch.prompts.get("recipe-assistant")
+compiled = prompt.compile(input="How do I make pancakes?")
+response = completion(model=prompt.model, messages=compiled.messages)
 ```
 
 ### Langfuse
@@ -3601,15 +3697,28 @@ def generate_answer(question):
     return client.chat.completions.create(...)
 ```
 
-#### Querying Traces
+#### Querying Traces and Observations
 
 ```python
 from langfuse import get_client
 
 langfuse = get_client()
 
-traces = langfuse.api.trace.list(limit=100, tags=["production"])
-trace = langfuse.api.trace.get("trace_id")
+# Observations API v2: filter by trace_id, name, type, session_id, and
+# always bound the time window. Needs a Langfuse v4 server (Cloud, or
+# self-hosted after upgrading; on a v3 server use api.legacy.observations_v1).
+# The trace list/get endpoints (langfuse.api.trace.*) are deprecated and
+# leave Langfuse Cloud on November 16, 2026.
+observations = langfuse.api.observations.get_many(
+    trace_id="trace_id",
+    fields="core,basic,io,usage",
+    from_start_time=window_start,
+    to_start_time=window_end,
+    limit=100,  # max 1,000; follow observations.meta.cursor for more
+)
+
+# Scores API v3 (Python SDK 4.8.1+); limit is capped at 100, page with meta.cursor
+scores = langfuse.api.scores_v3.get_many_v3(name="dietary_adherence", limit=100)
 ```
 
 #### Datasets
@@ -3736,13 +3845,13 @@ compiled = prompt.compile(role="chef", question="Best pasta recipe?")
 
 | Day | Activity | Time | Role Focus |
 |-----|----------|------|------------|
-| 22 | RAG evaluation — retrieval metrics + answer quality (Ch. 6) | 2h | Engineer |
+| 22 | RAG evaluation: retrieval metrics + answer quality (Ch. 6) | 2h | Engineer |
 | 23 | Multi-step pipeline evaluation (Ch. 7) | 2h | Engineer |
 | 24 | Multi-turn conversation evaluation (Ch. 8) | 2h | Engineer |
-| 25 | Safety evals — prompt injection, PII leakage (Ch. 9) | 2h | All |
+| 25 | Safety evals: prompt injection, PII leakage (Ch. 9) | 2h | All |
 | 26 | Set up regression test suite (Ch. 11) | 2h | Engineer |
-| 27 | Human annotation calibration — measure inter-annotator agreement (Ch. 12) | 1h | All |
-| 28 | Optimize for cost — tiered evaluation, sampling strategy (Ch. 13) | 1h | All |
+| 27 | Human annotation calibration: measure inter-annotator agreement (Ch. 12) | 1h | All |
+| 28 | Optimize for cost: tiered evaluation, sampling strategy (Ch. 13) | 1h | All |
 | 29 | Create monitoring dashboard + automated eval runs | 2h | Engineer |
 | 30 | Document eval suite, present to stakeholders, plan maintenance | 2h | All |
 
@@ -3756,7 +3865,7 @@ Real lessons from implementing complete eval pipelines in production:
 
 1. **LLM-as-Judge is powerful but needs guardrails** - Without proper validation, a judge can confidently give wrong answers. Always validate against ground truth.
 
-2. **You must test evaluators against ground truth** - A judge that seems reasonable but has TNR=22% is actively harmful — it misses most real failures.
+2. **You must test evaluators against ground truth** - A judge that seems reasonable but has TNR=22% is actively harmful: it misses most real failures.
 
 3. **Train/Dev/Test splits enable confidence** - Without them, you're fooling yourself about your judge's quality. This is non-negotiable.
 
@@ -3776,7 +3885,7 @@ Real lessons from implementing complete eval pipelines in production:
 
 9. **Safety evals are not optional** - Prompt injection, PII leakage, and jailbreak detection should be running before you worry about quality evals.
 
-10. **Start expensive, then optimize** - Use GPT-4o/Claude Sonnet to establish your performance ceiling, then test whether a cheaper model can match it. Often it can.
+10. **Start expensive, then optimize** - Use a frontier judge (Claude Opus 5.5, GPT-6 Astra) to establish your performance ceiling, then test whether a cheaper model can match it. Often it can.
 
 11. **Sampling beats exhaustive evaluation** - Evaluating 10% of traces with statistical rigor gives you a better answer than evaluating 100% with a bad judge.
 
@@ -3784,9 +3893,9 @@ Real lessons from implementing complete eval pipelines in production:
 
 **On Platform Choice**
 
-13. **LangWatch for speed, Langfuse for depth** - LangWatch gets you results in hours with built-in evaluators. Langfuse gives maximum control for complex custom logic. Many teams use both.
+13. **LangWatch for speed, Langfuse for depth** - LangWatch gets you results in hours with built-in evaluators. Langfuse gives maximum control for complex custom logic. Some teams run both, at the cost of instrumenting twice.
 
-14. **Built-in evaluators save weeks of dev time** - LangWatch's 40+ built-in evaluators cover most common use cases. If you're reinventing safety checks or RAG metrics, you're wasting time.
+14. **Built-in evaluators save weeks of dev time** - LangWatch's 30+ ready-made evaluators and Langfuse's judge templates cover most generic checks. If you're reinventing safety checks or RAG metrics, you're wasting time.
 
 15. **Community matters for long-term success** - Langfuse's larger community means more integrations, more examples, more support. LangWatch's simpler API means faster onboarding.
 
@@ -3794,33 +3903,33 @@ Real lessons from implementing complete eval pipelines in production:
 
 ## Conclusion
 
-AI evals are not just "testing" — they're a product development methodology that touches engineering, product management, and quality assurance.
+AI evals are not just "testing"; they're a product development methodology that touches engineering, product management, and quality assurance.
 
 **Key takeaways:**
 
-1. **Everyone needs evals** — Not just big companies. If your AI app touches users, you need systematic evaluation.
-2. **Start with error analysis** — Sit down and look at your failures before building anything automated (Chapter 3).
-3. **PMs and QAs must lead** — Error analysis and criteria definition are product/quality work, not just engineering tasks.
-4. **Build incrementally** — Start with code-based evals, then add LLM judges, then add safety evals. Don't try to do everything at once.
-5. **Measure what matters** — Application-specific criteria, not generic "helpfulness" scores.
-6. **Both TPR and TNR** — A judge that catches failures but also false-alarms is harmful. Measure both.
-7. **Split your data** — Train/Dev/Test is mandatory. Without it, you're overfitting your judge.
-8. **Correct for bias** — Use statistical correction (Chapter 10) for honest metrics.
-9. **Close the loop** — Evals that don't lead to improvements are wasted effort (Chapter 11).
-10. **Plan for scale** — Start with the best model, then optimize for cost (Chapter 13).
+1. **Everyone needs evals**: Not just big companies. If your AI app touches users, you need systematic evaluation.
+2. **Start with error analysis**: Sit down and look at your failures before building anything automated (Chapter 3).
+3. **PMs and QAs must lead**: Error analysis and criteria definition are product/quality work, not just engineering tasks.
+4. **Build incrementally**: Start with code-based evals, then add LLM judges, then add safety evals. Don't try to do everything at once.
+5. **Measure what matters**: Application-specific criteria, not generic "helpfulness" scores.
+6. **Both TPR and TNR**: A judge that catches failures but also false-alarms is harmful. Measure both.
+7. **Split your data**: Train/Dev/Test is mandatory. Without it, you're overfitting your judge.
+8. **Correct for bias**: Use statistical correction (Chapter 10) for honest metrics.
+9. **Close the loop**: Evals that don't lead to improvements are wasted effort (Chapter 11).
+10. **Plan for scale**: Start with the best model, then optimize for cost (Chapter 13).
 
 **Your action plan (see Appendix G for details):**
 
 1. Week 1: Set up observability (LangWatch or Langfuse), do error analysis
 2. Week 2: Build 2-3 core code-based evals
 3. Week 3: Build and validate an LLM judge with proper train/dev/test splits
-4. Week 4: Advanced topics — RAG evals, multi-turn evals, safety evals, automation
+4. Week 4: Advanced topics (RAG evals, multi-turn evals, safety evals, automation)
 5. Ongoing: 30 minutes per week maintenance + regression testing
 
 **Platform decision:**
 - Choose **LangWatch** if you want to start fast (<30 min setup) and use built-in evaluators
 - Choose **Langfuse** if you need maximum flexibility and have complex custom workflows
-- Use **both** if you want the best of both worlds (many teams do this)
+- Use **both** if you need what each does best and can afford to instrument twice
 
 **Remember:** The teams shipping the best AI products are the ones with the best evals. Not the fanciest models. Not the biggest teams. The ones who systematically measure and improve.
 
@@ -3832,7 +3941,7 @@ Start today. Your future self will thank you.
 
 ### Platform Documentation & Learning Hubs
 
-- **LangWatch Docs**: [docs.langwatch.ai](https://docs.langwatch.ai)
+- **LangWatch Docs**: [langwatch.ai/docs](https://langwatch.ai/docs)
 - **LangWatch GitHub**: [github.com/langwatch/langwatch](https://github.com/langwatch/langwatch)
 - **Langfuse Docs**: [langfuse.com/docs](https://langfuse.com/docs)
 - **Langfuse GitHub**: [github.com/langfuse/langfuse](https://github.com/langfuse/langfuse)
@@ -3841,45 +3950,46 @@ Start today. Your future self will thank you.
 
 ### Research & Thought Leadership
 
-- **OpenAI Evals Platform**: [evals.openai.com](https://evals.openai.com/)
+- **OpenAI Evals platform (retiring)**: existing evals go read-only October 31, 2026 and the dashboard and API shut down November 30, 2026. OpenAI's migration guide: [Moving from OpenAI Evals to Promptfoo](https://developers.openai.com/cookbook/examples/evaluation/moving-from-openai-evals-to-promptfoo)
 - **OpenAI Cookbook** (practical examples & guides): [cookbook.openai.com](https://cookbook.openai.com/)
 - **OpenAI Research**: [openai.com/research](https://openai.com/research)
-- **OpenAI Docs (Evals)**: [platform.openai.com/docs/guides/evals](https://platform.openai.com/docs/guides/evals)
 - **Anthropic Research**: [anthropic.com/research](https://www.anthropic.com/research)
 - **METR** (Model Evaluation & Threat Research): [metr.org](https://metr.org/)
 - **Eugene Yan on eval process**: [eugeneyan.com/writing/eval-process](https://eugeneyan.com/writing/eval-process/)
 
 ### Blogs That Shaped This Guide
 
-- **Hamel Husain's Blog**: [hamel.dev](https://hamel.dev/) — Applied AI engineering, LLM evals deep-dives
-- **Shreya Shankar's Site**: [sh-reya.com](https://www.sh-reya.com/) — LLM data systems research, eval methodology
-- **Maxim AI Articles**: [getmaxim.ai/articles](https://www.getmaxim.ai/articles) — Agentic evaluation patterns
+- **Hamel Husain's Blog**: [hamel.dev](https://hamel.dev/): Applied AI engineering, LLM evals deep-dives
+- **Shreya Shankar's Site**: [sh-reya.com](https://www.sh-reya.com/): LLM data systems research, eval methodology
+- **Maxim AI Articles**: [getmaxim.ai/articles](https://www.getmaxim.ai/articles): Agentic evaluation patterns
 
 ### Open-Source Tools & Libraries
 
 | Tool | Focus | License | Links |
 |------|-------|---------|-------|
-| **LangWatch** | Observability & built-in evals | Apache 2.0 | [GitHub](https://github.com/langwatch/langwatch) · [Docs](https://docs.langwatch.ai) |
-| **Langfuse** | Custom pipelines & tracing | MIT | [GitHub](https://github.com/langfuse/langfuse) · [Docs](https://langfuse.com/docs) |
+| **LangWatch** | Observability & built-in evals | Apache 2.0 (enterprise modules commercial) | [GitHub](https://github.com/langwatch/langwatch) · [Docs](https://langwatch.ai/docs) |
+| **Langfuse** | Custom pipelines & tracing | MIT (enterprise modules commercial) | [GitHub](https://github.com/langfuse/langfuse) · [Docs](https://langfuse.com/docs) |
+| **Arize Phoenix** | Tracing & evals, OTel-native | Elastic-2.0 | [GitHub](https://github.com/Arize-ai/phoenix) |
+| **Promptfoo** | Eval & red-teaming CLI; OpenAI Evals migration target | MIT | [GitHub](https://github.com/promptfoo/promptfoo) · [Docs](https://www.promptfoo.dev/docs/intro/) |
 | **RAGAS** | RAG-specific evaluation | Apache 2.0 | [GitHub](https://github.com/explodinggradients/ragas) · [Docs](https://docs.ragas.io/) |
 | **Comet Opik** | LLM tracing & evaluation | Apache 2.0 | [GitHub](https://github.com/comet-ml/opik) · [Site](https://www.comet.com/site/products/opik/) |
 | **judgy** | Statistical bias correction | Open | [GitHub](https://github.com/ai-evals-course/judgy) |
 | **Braintrust** | Experimentation & logging | Partial | [Docs](https://www.braintrust.dev/docs) |
-| **Galileo** | Hallucination detection | Proprietary | [Site](https://www.galileo.ai/) |
+| **Galileo** (now Splunk Agent Observability, Cisco) | Hallucination detection | Proprietary | [Docs](https://docs.galileo.ai/) · [Splunk](https://www.splunk.com/en_us/products/agent-observability.html) |
 | **Maxim** | Agentic system evaluation | Proprietary | [Site](https://www.getmaxim.ai/) |
 
 ### Strategy Comparison Matrix
 
 | Company | Focus | Open Source | Best For | Unique Strength |
 |---------|-------|-------------|----------|-----------------|
-| **LangWatch** | Observability + Built-in Evals | Yes (Apache 2.0) | Fast setup, analytics | 40+ built-in evaluators, auto-analytics |
+| **LangWatch** | Observability + Built-in Evals | Yes (Apache 2.0) | Fast setup, analytics | 30+ ready-made evaluators, auto-analytics |
 | **Langfuse** | Custom Pipelines | Yes (MIT) | Data sovereignty, flexibility | Self-hostable, full control over data |
 | **Anthropic** | Safety / Red Teaming | Partial | Frontier risks | Constitutional classifiers, multi-attempt adversarial testing |
-| **OpenAI** | Preparedness / Business | Evals toolkit | Enterprise context | SME probing, contextual evals |
+| **OpenAI** | Preparedness / Business | Promptfoo (MIT, OpenAI-owned; deal announced March 2026) | Enterprise context | SME probing, contextual evals |
 | **RAGAS** | RAG-specific | Yes (Apache 2.0) | RAG pipelines | Reference-free metrics, synthetic test data generation |
 | **Maxim** | Agentic Systems | No | Multi-agent apps | Simulation framework, no-code evaluation |
 | **Braintrust** | Experimentation | Partial | Early-stage teams | Collaborative design, fast iteration |
-| **Galileo** | Hallucinations | No | Quality assurance | ChainPoll, real-time monitoring |
+| **Galileo** (now Splunk Agent Observability) | Hallucinations | No | Quality assurance | ChainPoll, real-time monitoring; Cisco-owned |
 | **Comet Opik** | LLM Tracing & Evals | Yes (Apache 2.0) | End-to-end observability | Framework integrations, online evaluation rules |
 | **METR** | Catastrophic Risk | Research | Policy guidance | Autonomous capability assessment |
 
@@ -3888,9 +3998,9 @@ Start today. Your future self will thank you.
 
 ### Reference Work Credits
 This guide was built on the foundation of the following people's work and ideas. Their courses, blogs, and open-source contributions made this guide possible:
-- Hamel Husain: [@HamelHusain](https://x.com/HamelHusain) — [hamel.dev](https://hamel.dev/)
-- Shreya Shankar: [@sh_reya](https://x.com/sh_reya) — [sh-reya.com](https://www.sh-reya.com/)
-- Eugene Yan: [@eugeneyan](https://x.com/eugeneyan) — [eugeneyan.com](https://eugeneyan.com/)
+- Hamel Husain: [@HamelHusain](https://x.com/HamelHusain), [hamel.dev](https://hamel.dev/)
+- Shreya Shankar: [@sh_reya](https://x.com/sh_reya), [sh-reya.com](https://www.sh-reya.com/)
+- Eugene Yan: [@eugeneyan](https://x.com/eugeneyan), [eugeneyan.com](https://eugeneyan.com/)
 
 ---
 

@@ -7,6 +7,7 @@ Secure access control is essential for multi-user and multi-tenant LLM applicati
 - [Access Control Requirements](#access-control-requirements)
 - [Authentication Patterns](#authentication-patterns)
 - [Authorization Models](#authorization-models)
+- [Agent and Tool Authorization](#agent-and-tool-authorization)
 - [Tenant Isolation](#tenant-isolation)
 - [API Key Management](#api-key-management)
 - [Audit and Compliance](#audit-and-compliance)
@@ -21,7 +22,7 @@ Secure access control is essential for multi-user and multi-tenant LLM applicati
 
 | Dimension | Description | Controls |
 |-----------|-------------|----------|
-| **Authentication** | Who is making the request? | API keys, OAuth, JWT |
+| **Authentication** | Who is making the request? | API keys, OAuth, JWT, workload identity |
 | **Authorization** | What can they do? | RBAC, ABAC, policies |
 | **Isolation** | What data can they see? | Tenant filtering, encryption |
 | **Audit** | What did they do? | Logging, compliance reports |
@@ -34,6 +35,8 @@ Secure access control is essential for multi-user and multi-tenant LLM applicati
 | Data leakage | Cross-tenant exposure | Strict filtering |
 | Model output | Expose protected info | Output filtering |
 | Context pollution | Inject unauthorized data | Context validation |
+| Agent credentials | A hijacked agent or assistant session reuses its tokens | Scoped, short-lived, sender-constrained tokens |
+| Confused deputy across tool servers | One server steers credentials meant for another | Bind every credential to its issuer and audience |
 
 ---
 
@@ -105,6 +108,16 @@ class JWTAuthenticator:
             return AuthResult(authenticated=False, error=str(e))
 ```
 
+### Workload Identity Instead of Static Keys
+
+Static API keys are the weakest link in an agent fleet, and attackers now hunt them by name. The ChainDrop npm worm (August 2026) harvested OpenAI, Anthropic, Cursor, Codex and Gemini tokens alongside cloud and GitHub credentials. Mandiant described an intrusion in which an attacker took over a live AI coding-assistant session, the assistant recommended an already-poisoned package, and stolen GitHub OAuth tokens let the Shai-Hulud worm spread across about 100 internal repositories. Providers have moved accordingly: OpenAI made mutual TLS and X.509 workload identity federation GA (August 29, 2026), added API key expiration with org- and project-level maximum lifetimes (September 10), and lets admins restrict or disable key creation (September 15).
+
+The rules that follow:
+
+- **Prefer workload identity** (mTLS, federated short-lived tokens) for service-to-provider calls. Where keys remain, give each an owner, an expiry and a spend cap.
+- **Treat an agent or AI-assistant session as a principal** with its own scoped credentials and monitoring, and keep raw API keys and long-lived OAuth tokens out of its reach.
+- **Use sender-constrained tokens** where the protocol supports them (DPoP, RFC 9449), so a stolen bearer token is not enough on its own.
+
 ---
 
 ## Authorization Models
@@ -161,22 +174,57 @@ class ABACAuthorizer:
 ```python
 class ModelAccessControl:
     MODEL_TIERS = {
-        "gpt-4o": ["enterprise", "professional"],
-        "gpt-4o-mini": ["enterprise", "professional", "starter"],
-        "claude-3.5-sonnet": ["enterprise"],
-        "claude-3.5-haiku": ["enterprise", "professional", "starter"]
+        "claude-fable-5-1": ["enterprise"],
+        "claude-opus-5-5": ["enterprise", "professional"],
+        "gpt-6-sol": ["enterprise", "professional"],
+        "claude-haiku-4-5": ["enterprise", "professional", "starter"],
+        "gpt-6-luna": ["enterprise", "professional", "starter"]
     }
     
+    def __init__(self, zdr_eligible: set[str]):
+        # Load from your vendor agreements, not from code: retention terms are
+        # per model (e.g. Fable 5.1 requires 30-day retention unless authorized)
+        self.zdr_eligible = zdr_eligible
+    
     def can_access_model(self, user: User, model: str) -> bool:
-        allowed_tiers = self.MODEL_TIERS.get(model, [])
-        return user.tier in allowed_tiers
+        if user.tier not in self.MODEL_TIERS.get(model, []):
+            return False
+        if user.tenant.requires_zdr and model not in self.zdr_eligible:
+            return False
+        return True
     
     def get_available_models(self, user: User) -> list[str]:
         return [
-            model for model, tiers in self.MODEL_TIERS.items()
-            if user.tier in tiers
+            model for model in self.MODEL_TIERS
+            if self.can_access_model(user, model)
         ]
 ```
+
+Model access is now gated on the vendor side too: Anthropic's docs limit Mythos 5.1 to Project Glasswing participants (its Life Sciences and Cyber Verification Programs are named as further routes), OpenAI's `gpt-rosalind-research` is trusted-access only, and Gemini 3.8 Flash Cyber is available only through Google's Fairwind Program. The model registry behind this check should record, per model and platform, which models the organization is entitled to, their data-retention terms, and their retirement dates, so routing and fallback can never pick a model a tenant may not use.
+
+---
+
+## Agent and Tool Authorization
+
+When an agent calls tools on a user's behalf, authorization involves three parties: the user, the agent acting as an OAuth client, and each tool server. 2026 produced both a standards direction and a concrete failure.
+
+**The failure: authorization-server mix-up.** The official MCP SDKs let the MCP server decide which authorization server received the client's credentials, so a malicious or compromised server could name its own and receive stored refresh tokens and client secrets with no user interaction (CVE-2026-104850 in TypeScript, GHSA-qx49-fqc8-xw99 in Python, both CVSS 7.5; fixed in TypeScript 1.31.0 and 2.2.0, Python 1.30.0 and 2.2.0). Upgrading alone is not enough: machine-to-machine providers must be configured with the expected issuer (`expectedIssuer` in TypeScript, `issuer=` in Python), and credentials saved before the upgrade stay exposed until they are tagged with their issuer or cleared. A multi-server agent client is a natural confused deputy. The rule: **bind every credential to its issuer, and never let a resource server choose where secrets go.**
+
+**The building blocks:**
+
+| Need | Mechanism | Status |
+|------|-----------|--------|
+| A token usable only at one server | Audience binding (RFC 8707 resource indicators) | Part of the MCP authorization spec |
+| A stolen token is useless on its own | DPoP sender-constrained tokens (RFC 9449) | Shipped in the MCP TypeScript client 2.1.0 (September 23, 2026); the spec profile (SEP-1932) is still an open draft |
+| Least privilege per tool | Per-tool step-up scope challenges (HTTP 403 `insufficient_scope`) | Shipped in the MCP TypeScript server 2.1.0 |
+| Enterprise IdP controls which servers an agent may use | ID-JAG grant behind MCP Enterprise-Managed Authorization | Shipped in MCP; the IETF draft is at -04, not yet an RFC |
+| The agent's own identity, for headless agents | Workload identity plus the OAuth family, not new protocols | IETF WIMSE adopted draft-ietf-wimse-aims-00 (September 15, 2026); MCP workload identity federation (SEP-1933) is an open draft |
+
+**Approvals are authorization too.** Per-call human approval does not scale, so platforms are moving to policy: Claude Managed Agents' auto permission policy (September 10, 2026) has the server evaluate each agent or MCP tool call and run it, deny it, or pause for approval. Where humans do approve, bind the approval to the exact call: research on approval laundering (arXiv 2609.38983) shows the action a person approves is not always the action a coding-agent harness executes.
+
+**User-delegated model access.** Sign in with ChatGPT (announced at OpenAI DevDay, September 29, 2026; limited trial for selected partners) uses OAuth 2.0 with PKCE and OpenID Connect, and can optionally run eligible Responses API requests on the user's own ChatGPT plan. It is convenient identity, but it concentrates login and AI billing at one model vendor; weigh it like any IdP lock-in decision.
+
+Protocol-level detail, including Enterprise-Managed Authorization, is in [Tool Use and MCP](../07-agentic-systems/03-tool-use-and-mcp.md).
 
 ---
 
@@ -261,6 +309,8 @@ class TenantIsolatedCache:
             ttl=ttl
         )
 ```
+
+Cache isolation also reaches into the inference engine. A shared prefix cache is a timing side channel: if tenant B's request returns faster because tenant A already cached the same prefix, B learns something about A's prompt. vLLM isolates tenants with a per-request `cache_salt`, and in September 2026 a regression on one code path (tool-continuation turns on its Harmony `/v1/responses` endpoint dropped the salt) reopened the oracle until 0.30.0. Pass a per-tenant salt on every request, test each endpoint for it, and when many tenants share one provider account, keep tenant-specific content after the shared cacheable prefix.
 
 ---
 
@@ -472,7 +522,29 @@ The key principle: tenant_id is a mandatory filter at every data access point, n
 - Fine-grained: model access, operation type, daily limits
 - Least privilege by default
 
+**Keys we hold, not just keys we issue:**
+- For our own calls to model providers, prefer workload identity (mTLS or federated tokens) over static keys, and give any remaining key an owner, an expiry and a spend cap
+- LLM API keys are now standard loot for supply-chain worms, so keep them out of developer machines, agent sessions and CI logs
+
 The key principle: never store raw keys, support rotation, implement least privilege."
+
+### Q: An agent calls tools on five MCP servers on a user's behalf. How do you authorize it?
+
+**Strong answer:**
+
+"I design against the confused deputy, because the agent holds credentials for five servers and any one of them could be malicious or compromised.
+
+**Bind credentials to issuer and audience.** Each token is audience-bound to its server (RFC 8707), and each stored credential is tagged with the authorization server that issued it and never sent anywhere else. That exact gap was CVE-2026-104850 in the MCP TypeScript SDK in September 2026 (the Python SDK had the same flaw): a malicious server could name its own authorization server and collect refresh tokens and client secrets. Upgrading the SDK is not enough; machine-to-machine clients need an explicit expected issuer, and pre-upgrade credentials must be re-tagged or cleared.
+
+**Make stolen tokens less useful.** Short lifetimes, and DPoP sender-constrained tokens where the client and server support them.
+
+**Least privilege per tool.** Narrow default scopes with per-tool step-up challenges, so a read-only session cannot silently call a write tool.
+
+**Enterprise control.** Where the company runs an IdP, Enterprise-Managed Authorization lets admins decide centrally which servers the agent may reach. For headless agents, I give the agent its own workload identity rather than a user's long-lived token.
+
+**Approval and audit.** High-risk calls go through a policy engine or a human, with the approval bound to the exact call executed, and every call is logged with user, agent, server and scope.
+
+Standards are still settling (DPoP for MCP and workload identity federation are drafts, ID-JAG is not yet an RFC), so I keep the authorization layer behind my own interface and expect to swap pieces."
 
 ---
 
@@ -480,7 +552,12 @@ The key principle: never store raw keys, support rotation, implement least privi
 
 - OAuth 2.0: https://oauth.net/2/
 - OWASP API Security: https://owasp.org/API-Security/
+- RFC 8707, Resource Indicators for OAuth 2.0: https://www.rfc-editor.org/rfc/rfc8707
+- RFC 9449, OAuth 2.0 Demonstrating Proof of Possession (DPoP): https://www.rfc-editor.org/rfc/rfc9449
+- MCP TypeScript SDK advisory GHSA-6qxp-vccf-f47h (CVE-2026-104850): https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-6qxp-vccf-f47h
+- IETF WIMSE, AI Identity Management System (draft-ietf-wimse-aims): https://datatracker.ietf.org/doc/draft-ietf-wimse-aims/
+- OpenAI API changelog (workload identity, key expiry): https://developers.openai.com/api/docs/changelog
 
 ---
 
-*Previous: [Security Fundamentals](01-llm-security.md)*
+*Previous: [LLM Security](01-llm-security.md)*

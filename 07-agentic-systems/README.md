@@ -47,16 +47,16 @@ flowchart LR
 |------|----------------|
 | [01-agent-fundamentals.md](01-agent-fundamentals.md) | What makes a system an "agent"; the agent vs workflow distinction; when to choose each. |
 | [02-reasoning-loops-react-and-beyond.md](02-reasoning-loops-react-and-beyond.md) | ReAct, Plan-and-Execute, Reflexion, Tree-of-Thought; loop design patterns. |
-| [03-tool-use-and-mcp.md](03-tool-use-and-mcp.md) | Function calling, Model Context Protocol (MCP), the 2026-07-28 stateless rewrite, A2A v1.0, MCP production hardening. |
-| [04-multi-agent-orchestration.md](04-multi-agent-orchestration.md) | When multi-agent helps and when it hurts; orchestration vs choreography. |
-| [05-agent-memory-and-state.md](05-agent-memory-and-state.md) | The L1-L4 memory hierarchy (Working, Episodic, Semantic, Procedural) with tradeoffs. |
-| [06-planning-and-decomposition.md](06-planning-and-decomposition.md) | Task decomposition, plan revision, long-horizon planning. |
-| [07-error-handling-and-recovery.md](07-error-handling-and-recovery.md) | Tool failures, retries, loop guards, the "100th tool call" problem. |
-| [08-human-in-the-loop-patterns.md](08-human-in-the-loop-patterns.md) | Confirmation gates, escalation, supervised autonomy. |
-| [09-agentic-security-and-sandboxing.md](09-agentic-security-and-sandboxing.md) | Code execution sandboxes, capability gating, prompt injection in agents. |
-| [10-evaluating-agentic-systems.md](10-evaluating-agentic-systems.md) | Trajectory evals, Agent-as-judge, Process Reward Models, agent benchmarks. |
-| [11-durable-execution.md](11-durable-execution.md) | Surviving crashes in long-running agents: event history, replay, exactly-once side effects, Temporal. |
-| [12-loop-engineering.md](12-loop-engineering.md) | Engineering the loops around an agent: the four loop levels, termination and budget control, context rot, verification, anti-patterns like loopmaxxing, and the maturity ladder. |
+| [03-tool-use-and-mcp.md](03-tool-use-and-mcp.md) | Function calling, Model Context Protocol (MCP), the 2026-07-28 stateless rewrite and the August 2026 roadmap, the skills extension, A2A v1.0, agentic commerce protocols, MCP production hardening (advisory wave, OAuth mix-up), and computer-use toolsets. |
+| [04-multi-agent-orchestration.md](04-multi-agent-orchestration.md) | When multi-agent helps and when it hurts; supervisor, swarm, pipeline (workflows as code), and debate patterns; managed coordinators. |
+| [05-agent-memory-and-state.md](05-agent-memory-and-state.md) | The L1-L4 memory hierarchy (Working, Episodic, Semantic, Procedural) with tradeoffs; write-time vs sleep-time vs read-time curation; when memory makes agents worse. |
+| [06-planning-and-decomposition.md](06-planning-and-decomposition.md) | Task decomposition, requirement elicitation, plan revision, long-horizon planning. |
+| [07-error-handling-and-recovery.md](07-error-handling-and-recovery.md) | Tool failures, retries, loop guards, kill switches and containment time, cross-vendor fallback. |
+| [08-human-in-the-loop-patterns.md](08-human-in-the-loop-patterns.md) | Confirmation gates, policy-gated autonomy, approval laundering, escalation, supervised autonomy. |
+| [09-agentic-security-and-sandboxing.md](09-agentic-security-and-sandboxing.md) | Code execution sandboxes, capability gating, prompt injection in agents, the 2026 incident record, out-of-band containment. |
+| [10-evaluating-agentic-systems.md](10-evaluating-agentic-systems.md) | Trajectory evals, current agent benchmarks and their reporting traps, eval integrity, decision-model judges. |
+| [11-durable-execution.md](11-durable-execution.md) | Surviving crashes in long-running agents: event history, replay, exactly-once side effects, Temporal, and managed agent runtimes. |
+| [12-loop-engineering.md](12-loop-engineering.md) | Engineering the loops around an agent: the four loop levels, recursive self-improvement, termination and budget control, context rot, verification, anti-patterns like loopmaxxing, and the maturity ladder. |
 
 ## Companion Chapters
 
@@ -68,8 +68,8 @@ flowchart LR
 ## Key Takeaways
 
 - Agents are not a single technology; they are a composition of reasoning loop, tool layer, memory, planner, and evaluator. Read chapter 01 first.
-- MCP is the standard tool-interop protocol in 2026; do not build custom tool protocols unless you have a strong reason.
+- MCP is the standard tool-interop protocol in 2026 (current spec revision 2026-07-28, governed with A2A under the Agentic AI Foundation); do not build custom tool protocols unless you have a strong reason.
 - Multi-agent orchestration (ch 04) is over-applied; single-agent with good tooling beats multi-agent for most use cases.
 - Memory (ch 05) and error recovery (ch 07) are where most production agent bugs live; budget evaluation effort there.
-- Human-in-the-loop (ch 08) is not a fallback; design gates intentionally for high-stakes actions.
+- Human-in-the-loop (ch 08) is not a fallback; design gates intentionally for high-stakes actions. Approvals and permission classifiers reduce risk, but containment (sandbox, egress policy, an out-of-band kill path) is the boundary (ch 09).
 - Loop engineering (ch 12) is its own discipline now: a strong model in a weak harness loses to a decent model in a great one. Enforce termination and budgets in the harness, and keep the verifier separate from the producer.

@@ -61,7 +61,7 @@ A financial services company wants to build an AI-powered search system for thei
 
 - Role-based access control (RBAC)
 - Audit logging of all queries
-- No data leaves company network
+- No data leaves the company's cloud boundary: model calls go through private endpoints (Bedrock, Google Cloud or Foundry) under zero data retention, and US-only processing where compliance requires it (about a 10% premium; see [Cost Analysis](#cost-analysis))
 - PII detection and handling
 
 ---
@@ -130,7 +130,7 @@ flowchart TD
     subgraph PIPELINE[Query Pipeline]
         RS[Retrieval<br/>Hybrid search]
         RR[Reranker<br/>Cross-encoder]
-        GS[Generation<br/>Gemini 3 Pro]
+        GS[Generation<br/>Claude Sonnet 5.5]
         RS --> RR --> GS
     end
 
@@ -151,19 +151,19 @@ flowchart TD
     GS --> UI
 ```
 
-### Technology Choices (Dec 2025 Update)
+### Technology Choices (October 2026)
 
 | Component | Choice | Rationale |
 |-----------|--------|-----------|
-| **Primary LLM** | Gemini 3.0 Pro | **2.5M context** natively handles 100+ documents without fragmentation |
-| **Agentic LLM** | GPT-5.2 | Industry-leading tool-use accuracy for complex cross-doc analysis |
-| **Retriever** | Gemini 3 Flash | Low-cost retrieval over massive context windows |
-| **Embeddings** | text-embedding-3-large | Proven quality and cost-efficient |
-| **Vector DB** | Qdrant (Self-hosted) | Performance, filtering, and on-prem compliance |
-| **Reranker** | BGE-Reranker-v2-X | Open-source SoTA for on-prem isolation |
+| **Primary LLM** | Claude Sonnet 5.5 ($2 / $10 per 1M tokens) | Flat pricing to 1M tokens, so multi-document contexts carry no long-context surcharge; zero data retention available; reachable through Bedrock, Google Cloud and Foundry private endpoints; retirement not before September 28, 2027 |
+| **Hard cross-document analysis** | Claude Opus 5.5 ($4 / $20) or GPT-6.1 Sol ($2 / $10) | Escalation path for the few percent of queries that need multi-step reasoning across many documents. Keep GPT-6.1 Sol prompts under 272K input tokens, above which OpenAI bills the whole request at $4 / $15 |
+| **Summarization and bulk tier** | Gemini 3.8 Flash ($0.75 / $3.75 introductory; $1.50 / $7.50 from January 1, 2027) | Cheap 1M-token context for document summaries and ingestion-time enrichment. Budget on the 2027 price |
+| **Embeddings** | text-embedding-3-large ($0.13 per 1M) | Proven and unchanged. If you expect to change models, Cohere Embed 5 (Pro and Fast) and the Voyage 4 family each share one embedding space across sizes, so you can index with the large model and query with the cheap one without re-indexing |
+| **Vector DB** | Qdrant 1.19 (self-hosted) | Performance, payload filtering and on-prem compliance. The `memory` setting (pinned, cached, cold) replaces `on_disk` and `always_ram` for tiering |
+| **Reranker** | Qwen3-Reranker-8B (self-hosted, Apache 2.0) or an API reranker (Cohere Rerank 4, Voyage rerank-3) | The API rerankers accept 32K tokens per document, which removes the old 512-token truncation of long chunks |
 
 > [!NOTE]
-> **Shift:** Production teams have moved from "Small Chunk RAG" to **"Balanced Context RAG"**. With 1M-2M token contexts on every major frontier model, we no longer need to find the "perfect 512-token chunk." We retrieve entire document segments (10k-50k tokens) and let the model's native attention handle the needle.
+> **Shift: bigger retrieval units, priced deliberately.** With 1M-token windows on the main frontier models, teams retrieve whole document sections (10K to 50K tokens) for multi-document questions instead of hunting for the perfect 512-token chunk. The bill scales with it: at 1.5M queries a month, every extra 10K input tokens per query costs about $30,000 a month on Sonnet 5.5. Route by query type: small chunks for lookups, large sections only for synthesis questions. Pricing rules differ by vendor too: Claude 4.6 and later bill flat to 1M, while OpenAI reprices the whole request above 272K input tokens.
 
 ---
 
@@ -213,7 +213,7 @@ class IngestionPipeline:
             for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
         ]
         
-        await self.vector_db.upsert(collection="documents", points=points)
+        await self.vector_db.upsert(collection_name="documents", points=points)
         
         # 6. Store full document
         await self.doc_store.put(document.id, parsed.text)
@@ -260,7 +260,7 @@ sequenceDiagram
 class QueryService:
     def __init__(self):
         self.retriever = HybridRetriever()
-        self.reranker = CohereReranker()
+        self.reranker = CrossEncoderReranker()  # self-hosted Qwen3-Reranker or an API reranker
         self.generator = LLMGenerator()
         self.guardrails = GuardrailPipeline()
     
@@ -365,12 +365,14 @@ class HybridRetriever:
     async def vector_search(self, query: str, filters: dict, top_k: int):
         query_embedding = await self.embedder.embed(query)
         
-        results = await self.vector_db.search(
-            collection="documents",
-            query_vector=query_embedding,
+        # Query API: Qdrant 1.19 removed the legacy /search endpoint from its REST schema
+        response = await self.vector_db.query_points(
+            collection_name="documents",
+            query=query_embedding,
             query_filter=filters,
             limit=top_k
         )
+        results = response.points
         
         return [
             Document(
@@ -412,48 +414,68 @@ flowchart LR
 
     RRF --> RR[Cross-Encoder Rerank<br/>top 50 to top 10]
     RR --> CTX[Context Format<br/>with citations]
-    CTX --> LLM[Generation<br/>Gemini 3 Pro 2.5M ctx]
+    CTX --> LLM[Generation<br/>Claude Sonnet 5.5, 1M ctx]
 ```
 
-### Generation with Massive Context (Dec 2025)
+### Generation with Long Context
 
 ```python
-class GeminiGenerator:
+import anthropic
+
+class LongContextGenerator:
+    """
+    Claude Sonnet 5.5 over whole document sections. Documents sit in the
+    system prompt, ahead of the conversation, so follow-up questions over the
+    same documents hit the prompt cache (reads bill at $0.20 per 1M on
+    Sonnet 5.5, 0.1x the input price).
+    """
     def __init__(self):
-        self.client = genai.GenerativeModel("gemini-3.0-pro")
-    
+        # Use AsyncAnthropicBedrockMantle, AsyncAnthropicVertex or AsyncAnthropicFoundry
+        # instead to keep traffic on a private cloud endpoint
+        self.client = anthropic.AsyncAnthropic()
+
     async def generate(
         self,
         query: str,
         context_docs: list[Document],
-        conversation_history: list[Message] = None
+        conversation_history: list[dict] | None = None
     ) -> str:
-        # 2.5M context allows passing ENTIRE documents, not just snippets
-        system_instruction = """
-        You are an enterprise knowledge assistant. 
-        Analyze the provided documents to answer the query accurately.
-        Cite every claim using [[DocName:PageNumber]] format.
-        """
-        
-        contents = [{"text": doc.text} for doc in context_docs]
-        contents.append({"text": f"User Query: {query}"})
-        
-        response = await self.client.generate_content_async(
-            contents,
-            generation_config=genai.types.GenerationConfig(temperature=0.0)
+        instructions = (
+            "You are an enterprise knowledge assistant. "
+            "Answer only from the provided documents. "
+            "Cite every claim using [[DocName:PageNumber]] format."
         )
-        return response.text
+        doc_blocks = [
+            {"type": "text", "text": f"<document name='{d.name}'>\n{d.text}\n</document>"}
+            for d in context_docs
+        ]
+        doc_blocks[-1]["cache_control"] = {"type": "ephemeral"}  # cache through the last document
+
+        # No temperature: Sonnet 5.5 rejects non-default sampling values,
+        # and the Python SDK 1.x removed them from the method signature
+        response = await self.client.messages.create(
+            model="claude-sonnet-5-5",
+            max_tokens=4096,
+            system=[{"type": "text", "text": instructions}, *doc_blocks],
+            output_config={"effort": "medium"},
+            messages=[
+                # History holds only prior questions and answers, never the documents,
+                # so the cached system-plus-documents prefix stays byte-identical
+                *(conversation_history or []),
+                {"role": "user", "content": f"Question: {query}"},
+            ],
+        )
+        # Adaptive thinking is on by default, so keep only the text blocks
+        return "".join(b.text for b in response.content if b.type == "text")
 ```
 
 > [!TIP]
-> **Production Choice vs. Bleeding Edge**
-> While Gemini 3.1 Pro offers a 1M-token window, many production systems still default to **Claude Sonnet 4.6** or **GPT-5.5** as their primary generators.
-> 
-> **Why?**
-> - **Maturity**: 12+ months of production track record.
-> - **Predictability**: Known latency patterns and fewer "hallucination spikes" on long-tail requests.
-> - **SDK Stability**: Deep integration with frameworks like LangGraph and LlamaIndex.
-> - **Cost**: Optimized pricing for high-volume standard RAG.
+> **Production choice vs. newest release**
+> Sonnet 5.5 shipped September 28, 2026. Teams with prompts and guardrails tuned on Sonnet 5 or Sonnet 4.6 should run their eval set before switching, because the upgrade is not drop-in:
+> - **Request shape**: forced `tool_choice` (`any` or `tool`) returns 400, `thinking: {type: "disabled"}` returns 400 (the lowest setting is `between_tools`), and non-default `temperature` returns 400 (already true on Sonnet 5).
+> - **Behavior**: effort levels were recalibrated, so re-run the effort sweep instead of carrying settings over.
+> - **Deadlines**: anything still pinned to Sonnet 4.5 has to move regardless; it retires November 30, 2026 on the Claude API and Foundry.
+> - **SDK**: Anthropic's Python SDK 1.0 (August 20, 2026) moved to `httpx2`, and httpx-based tracing and test mocks can silently miss calls. Verify span counts after upgrading.
 
 ---
 
@@ -526,24 +548,28 @@ class QueryCache:
 
 ## Cost Analysis
 
-### Monthly Cost Estimate (500 Users, 100 Queries/User/Day)
+### Monthly Cost Estimate (500 Users, 100 Queries/User/Day, October 2026 List Prices)
 
 | Component | Calculation | Monthly Cost |
 |-----------|-------------|--------------|
-| LLM (Claude Sonnet) | 1.5M queries × 2K tokens × $3/1M in + 500 tokens × $15/1M out | ~$20,250 |
-| Embeddings | 1.5M queries × $0.13/1M | ~$200 |
-| Reranking (Cohere) | 1.5M × 50 docs × $0.001/1K | ~$75 |
-| Vector DB (Qdrant Cloud) | 3-node cluster | ~$1,500 |
+| LLM (Claude Sonnet 5.5, US-only processing at 1.1x) | 1.5M queries × (2K input tokens × $2.20/1M + 500 output tokens × $11/1M) | ~$14,850 |
+| Embeddings | ~75M query tokens plus re-embedding ~2% of the corpus daily (~50M tokens a day, ~1.5B a month) at $0.13/1M | ~$200 |
+| Reranking (Voyage rerank-3) | 1.5M queries × 50 candidates × ~400 tokens × $0.05/1M | ~$1,500 |
+| Vector DB (Qdrant) | 3-node cluster | ~$1,500 |
 | Elasticsearch | 3-node cluster | ~$2,000 |
 | Compute (Query Service) | 4 instances | ~$1,000 |
-| **Total** | | **~$25,000/month** |
+| **Total** | | **~$21,000/month** |
+
+Model lines use Claude API list prices; Bedrock and Google Cloud price Claude on their own rate cards, so confirm the regional rate on the platform you deploy to. The embedding and reranking lines also send document text to a vendor, so they count against the cloud-boundary requirement: reach them through a private endpoint in your cloud or self-host them. Two assumptions carry this table. First, 2K-token contexts: if 20% of queries pull 20K-token sections for synthesis, add about $12,000 a month (300K queries × 18K extra tokens × $2.20/1M). Second, 500 output tokens: Sonnet 5.5 runs adaptive thinking by default and thinking bills as output, so measure real output per query before trusting the LLM line.
 
 ### Cost Optimization Opportunities
 
-1. **Caching**: 30% cache hit rate → $6K savings on LLM
-2. **Model routing**: Route simple queries to cheaper model → 40% savings
-3. **Batch embeddings**: Use async batching → 20% savings
-4. **Self-hosted reranker**: Replace Cohere with open source → Eliminate $75
+1. **Response caching**: 30% cache hit rate → ~$4,500 savings on LLM
+2. **Prompt caching**: Cache the static system prompt and instructions; cache reads bill at 0.1x the input price
+3. **Model routing**: Route simple lookups to a cheaper tier (Claude Haiku 4.5 at $1 / $5, or Gemini 3.8 Flash) → up to 40% LLM savings; Haiku 5.5 is announced but not yet released, so plan the migration
+4. **Residency only where required**: Pin US-only processing for the departments that need it and run the rest on global endpoints → recovers up to ~$1,350 (the 10% uplift)
+5. **Batch re-embedding**: Run nightly re-embedding through OpenAI's Batch API → 50% off that line
+6. **Self-hosted reranker**: Replace the API reranker with Qwen3-Reranker → eliminates ~$1,500 of API spend, but one dedicated H100 runs about $2,000 a month at the October 1 Silicon Data index ($2.77 per GPU-hour), so this saves money only on GPU capacity you already have. It is also the default if compliance rules out sending candidate passages to a reranking API
 
 ---
 
@@ -597,6 +623,7 @@ class QueryCache:
 
 **Tradeoffs (5 min):**
 - Cost vs latency (model selection)
+- Context size vs cost (whole sections help synthesis but multiply input spend)
 - Accuracy vs latency (reranking adds time)
 - Freshness vs cost (streaming vs batch)
 

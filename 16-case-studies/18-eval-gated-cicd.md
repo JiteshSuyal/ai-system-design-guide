@@ -6,15 +6,17 @@ A 28-engineer AI product team replaces post-merge regression hunts with eval-gat
 
 An AI-first SaaS company ships a customer-facing answer-bot built on a RAG pipeline plus an agent loop. Six months ago the team shipped a "small" prompt change that regressed answer-quality on questions about a specific contract type, and lost a $4M renewal when the customer noticed. The post-incident review found three things: the change had not been evaluated against the contract-specific test set; the LLM-as-judge metric used in spot checks had drifted by 11 points and no one noticed; and a fix that needed a 2-day rollback took 9 days because no one had a safe-to-revert baseline.
 
-Constraints from the May 2026 reality:
+Constraints:
 
 - 28 engineers across 4 teams; about 50 PRs per week touch the AI surface
 - Customers in regulated industries refuse to accept regression on their domain-specific queries
-- Per-PR eval budget: under $40 of model spend; full-run budget: under $1,200
+- Per-PR eval budget: under $40 of model spend; total eval budget: about $15K per month
 - p95 PR-to-merge time goal: under 90 minutes including eval
 - Quarterly auditor signoff on the eval methodology
 
-The May 2026 reality is that eval-gated CI is no longer a nice-to-have. Hamel Husain's [eval blog series](https://hamel.dev/blog/posts/evals/), Eugene Yan's writings ([evals](https://eugeneyan.com/writing/evals/)), and the [judgy library](https://github.com/ai-evaluation/judgy) for statistical correction have all converged on a playbook. Phoenix, Langfuse, Braintrust, and Galileo all ship CI integrations. The question is no longer "should we do this" but "how do we do this without doubling cycle time."
+Eval-gated CI is no longer a nice-to-have. Hamel Husain's [eval blog series](https://hamel.dev/blog/posts/evals/), Eugene Yan's writings ([evals](https://eugeneyan.com/writing/evals/)), and the [judgy library](https://github.com/ai-evals-course/judgy) for statistical correction have all converged on a playbook. Phoenix, Langfuse, Braintrust, and Galileo (now Splunk Agent Observability, after Cisco's acquisition) all support running evals from CI. The question is no longer "should we do this" but "how do we do this without doubling cycle time."
+
+The tooling underneath churns, so own the assets. OpenAI's hosted Evals goes read-only on October 31, 2026 and shuts down November 30 (OpenAI points users to Promptfoo, the open-source tool it agreed to acquire in March), and Dynatrace agreed in August to buy Arize, Phoenix's developer. Golden sets, judge prompts, and calibration labels live in our repo, so the runner is replaceable in a sprint.
 
 ## Architecture
 
@@ -53,8 +55,8 @@ flowchart TB
 |-------|------|---------|
 | Golden sets | YAML in repo, 1,200 to 4,000 cases per surface | Stable test base |
 | Code evaluators | Pytest with custom assertions | Cheap, deterministic checks |
-| LLM judges | Claude Sonnet 4.7 for judgment | Subjective quality |
-| Statistical correction | [judgy](https://github.com/ai-evaluation/judgy) | Convert judge scores to estimates with CIs |
+| LLM judges | Claude Sonnet 5.5 (pinned ID and effort), GPT-6 Sol as the calibrated backup | Subjective quality |
+| Statistical correction | [judgy](https://github.com/ai-evals-course/judgy) | Convert judge scores to estimates with CIs |
 | Pipeline | GitHub Actions plus custom runner | CI orchestration |
 | Trace store | Langfuse | Per-PR observability |
 | Annotation | Argilla self-hosted | Human re-labeling for judge calibration |
@@ -77,7 +79,7 @@ Sizing: 1,200 cases per surface is the floor; below this, the corrected-score CI
 
 ### 2. Train/dev/test split for the judge
 
-The LLM judge is itself a model with prompt parameters and few-shot examples. We treat the judge prompt as a model and apply train/dev/test discipline: 60 percent of human-labeled cases tune the judge prompt, 20 percent select the best prompt variant, 20 percent are a hold-out we only consult before a major judge-prompt change. This pattern is the core of the [judgy methodology](https://github.com/ai-evaluation/judgy) and Hamel's eval posts.
+The LLM judge is itself a model with prompt parameters and few-shot examples. We treat the judge prompt as a model and apply train/dev/test discipline: 60 percent of human-labeled cases tune the judge prompt, 20 percent select the best prompt variant, 20 percent are a hold-out we only consult before a major judge-prompt change. This pattern is the core of the [judgy methodology](https://github.com/ai-evals-course/judgy) and Hamel's eval posts.
 
 Re-calibration cadence: every 30 days, 50 fresh cases get re-labeled by 2 humans (Cohen's kappa over 0.7 required); if the judge's accuracy on dev set drops below 80 percent, we re-tune.
 
@@ -85,7 +87,7 @@ Re-calibration cadence: every 30 days, 50 fresh cases get re-labeled by 2 humans
 
 Naive LLM-as-judge accuracy on subjective categories is around 75 to 88 percent in our domain. A raw judge score is biased. `judgy` computes a corrected estimate of the true pass rate using the judge's confusion matrix on the held-out set, and returns a confidence interval. We gate on the lower bound of the CI being within tolerance. This means we never block a PR on judge noise alone, and we never approve a regression that the judge merely failed to catch.
 
-The math: if the judge has 85 percent precision and 92 percent recall on the held-out set, and the new build's judge-reported pass rate is 89 percent, the corrected estimate is about 87 percent with a 95 percent CI of roughly 83 to 91 percent. We allow merge if the CI lower bound is at most 2 points below `main`. ([Reference: judgy README math](https://github.com/ai-evaluation/judgy#statistical-correction)).
+The math: the correction uses the judge's true positive rate (it passes a good answer) and true negative rate (it fails a bad one), estimated on the held-out set: corrected = (observed + TNR - 1) / (TPR + TNR - 1). If the judge has a 99 percent TPR but only a 75 percent TNR (it rarely fails a good answer but passes a quarter of the bad ones), a judge-reported 89 percent pass rate corrects to about 86.5 percent, with a 95 percent CI of roughly 82 to 91 percent. Lenient judges inflate pass rates; the correction takes that back out. We allow merge if the CI lower bound is at most 2 points below `main`. ([Reference: judgy README math](https://github.com/ai-evals-course/judgy#how-it-works)).
 
 ### 4. Failure-mode taxonomy as the assertion surface
 
@@ -100,7 +102,9 @@ A full eval-set run costs $80 to $200 depending on model spend. At 50 PRs per we
 - Nightly cron runs 100 percent on `main` to catch any drift we missed.
 - A new judge-prompt change triggers a 100 percent run on a frozen historical set.
 
-This bounds per-PR cost to under $40 and total per-week cost to under $1,200.
+This bounds per-PR cost to under $40 and default PR traffic to about $1,250 per week (see the cost model below).
+
+For binary axes there is now a cheaper judge tier: **decision models** that return a typed yes/no or category with a probability instead of generated text. A September 2026 comparison (arXiv 2609.29769) found LLM rubric judges cost 16 to 325x as much as TypeSafe's Jev decision model (early access, $0.042 per 1M input tokens), with significant accuracy differences in at most 8 of 27 paired comparisons; Jev was strongest on binary checklist criteria and behind on ordinal ones, and cascading the two gained at most 2.7 points. We are piloting one on the format-violation and refusal axes, behind the same calibration gate as any judge. Graded axes, and anything where reviewers need a written rationale, stay on the LLM judge.
 
 ### 6. Judge-prompt drift detection
 
@@ -114,7 +118,7 @@ When drift exceeds 3 points or kappa drops below 0.65, we open a maintenance tic
 
 ### 7. Caching the eval pipeline
 
-A typical golden-set case generates an output, which is then judged. The output is deterministic given the prompt and the model version. We cache (prompt-hash, model-version) to (output, judge-score) so that re-running the same eval is nearly free. Cache hit rate on PRs that touch only orchestration code (not prompts) is around 70 percent; this is a 3x cost reduction on this class of changes.
+A typical golden-set case generates an output, which is then judged. The output is not deterministic (current Claude models reject non-default temperature, and GPT-6 Astra accepts no temperature at all), but for caching we treat one recorded output per key as the reference. We cache (prompt-hash, model ID, effort, provider epoch) to (output, judge-score) so that re-running the same eval is nearly free. The provider epoch is a counter we bump whenever a vendor changelog reports a serving change under an unchanged model ID. On September 25, 2026 OpenAI fixed an image-encoding bug in GPT-6 Sol and Luna without changing the IDs and told customers to rerun image evaluations; a cache keyed on model ID alone would have kept serving launch-week results from the broken path. Cache hit rate on PRs that touch only orchestration code (not prompts) is around 70 percent; this is a 3x cost reduction on this class of changes.
 
 ### 8. PR-level instrumentation
 
@@ -151,7 +155,7 @@ sequenceDiagram
 
 ### F1: Judge prompt drift goes unnoticed
 
-The judge gradually under-detects hallucinations after a model upgrade. Mitigation: monthly held-out replay; inter-judge agreement tracking; a "freeze judge" mode for protected branches that pins the judge model version even when newer models are available. The drift incident that broke us before was caused by exactly this; we now catch drift within one cycle.
+The judge gradually under-detects hallucinations after a model upgrade. Mitigation: monthly held-out replay; inter-judge agreement tracking; a "freeze judge" mode for protected branches that pins the judge model version and its effort level even when newer models are available. Pin effort explicitly, because defaults move between versions (Claude Opus 5 defaulted to `high`, Opus 5.5 to `medium`), and a silent default change is a judge change. The drift incident that broke us before was caused by exactly this; we now catch drift within one cycle.
 
 ### F2: Eval set becomes overfit
 
@@ -163,7 +167,7 @@ Stratified sampling: we ensure each PR's 10-percent sample includes at least 1 c
 
 ### F4: Cost overrun from accidental full-runs
 
-A `full-eval` label on every PR triples cost. Mitigation: the label requires an approval from a CODEOWNERS file; an automated reminder pings whoever applies it. We also cap monthly eval spend with a hard ceiling at $5K and refuse to start a job that would exceed it.
+A `full-eval` label on every PR triples cost. Mitigation: the label requires an approval from a CODEOWNERS file; an automated reminder pings whoever applies it. We also cap monthly eval spend with a hard ceiling at $17K (about 13 percent above plan) and refuse to start a job that would exceed it.
 
 ### F5: Block-rate too high; developers learn to ignore
 
@@ -173,9 +177,11 @@ If 35 percent of PRs are blocked, developers stop reading reports and look for w
 
 A held-out case ends up as a few-shot example. Mitigation: the held-out set is stored in a separate repo with a separate access list; engineers cannot read it; only the eval runner has a deploy key. Failure reports include hashes, not raw cases, for held-out failures.
 
+Leakage also runs the other way once the system under test has tools: an agent that can search, read files, or run git can find the answers. A September 2026 audit of SWE-Bench Pro v1.0 (arXiv 2609.34262) found that 24% to 73% of passing runs, depending on the model, were unearned, mostly through access to reference solutions in git history. Our eval sandbox runs the agent against an index and filesystem that contain neither the eval repo nor its history.
+
 ### F7: Judge model deprecation
 
-The vendor announces end-of-life for the judge model. Mitigation: we keep at least two judge models calibrated in parallel; when a deprecation lands, we have a 60-day window to swap with kappa thresholds preserved. The git history of judge prompts plus the calibration data make this routine.
+The vendor announces end-of-life for the judge model. Anthropic's minimum notice is 60 days; OpenAI's is 6 months for GA models but can be 2 weeks for previews, so a preview model never judges a protected branch. Mitigation: we keep at least two judge models from different vendors calibrated in parallel; when a deprecation lands, we swap with kappa thresholds preserved. The git history of judge prompts plus the calibration data make this routine.
 
 ### F8: Eval runner queue saturation
 
@@ -202,7 +208,7 @@ At 50 PRs per week:
 - Full-eval runs (about 8 per week): $100 each; $800 per week
 - Nightly cron: $200 each; $1,400 per week
 - Judge re-calibration: $50 per month
-- Total: about $14K per month
+- Total: about $3,450 per week, or about $15K per month
 
 This pays for itself with one prevented regression. Our post-incident estimate of the $4M renewal we lost suggests this is well-bounded by even one save per year.
 
@@ -242,11 +248,11 @@ The temptation is to roll all axes into one number and gate on it. We do not. A 
 - Hamel Husain, [A field guide to rapidly improving AI products](https://hamel.dev/blog/posts/field-guide/)
 - Eugene Yan, [Evals: Constructed for LLM apps](https://eugeneyan.com/writing/evals/)
 - Eugene Yan, [LLM-as-judge](https://eugeneyan.com/writing/llm-evaluators/)
-- [judgy library](https://github.com/ai-evaluation/judgy)
+- [judgy library](https://github.com/ai-evals-course/judgy)
 - [Phoenix evals](https://docs.arize.com/phoenix/evaluation/concepts-evals)
 - [Langfuse evaluations](https://langfuse.com/docs/scores/overview)
 - [Braintrust](https://www.braintrust.dev/docs)
-- [Galileo evaluate](https://www.rungalileo.io/blog/llm-evaluation)
+- Galileo (now Splunk Agent Observability), [Run experiments in code](https://docs.galileo.ai/sdk-api/experiments/running-experiments)
 - Zheng et al., [Judging LLM-as-a-Judge](https://arxiv.org/abs/2306.05685)
 - [Argilla annotation platform](https://docs.argilla.io/)
 - [pytest-html report integration](https://pytest-html.readthedocs.io/)

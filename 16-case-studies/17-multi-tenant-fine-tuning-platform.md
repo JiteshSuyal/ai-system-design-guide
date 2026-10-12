@@ -4,9 +4,9 @@ A vertical-AI vendor serves 280 customers from a single base model plus per-tena
 
 ## The Business Problem
 
-A vertical SaaS vendor in legal-tech runs a contract-analysis product. Each of its 280 enterprise customers expects the model to respect their templates, their precedent corpus, and their preferred drafting style. Off-the-shelf prompting is not enough: customers run blind A/B tests against generic models and reject the product when output diverges from their house style. A separate fine-tuned model per tenant is also not viable: at 70B parameters, each model is 140 GB on disk and would require a dedicated H100 for serving, blowing the unit economics.
+A vertical SaaS vendor in legal-tech runs a contract-analysis product. Each of its 280 enterprise customers expects the model to respect their templates, their precedent corpus, and their preferred drafting style. Off-the-shelf prompting is not enough: customers run blind A/B tests against generic models and reject the product when output diverges from their house style. A separate fine-tuned model per tenant is also not viable: at 70B parameters, each model is 140 GB in BF16 and would need at least two dedicated H100s just to load, blowing the unit economics.
 
-Constraints from the May 2026 reality:
+Constraints:
 
 - 280 paid tenants, doubling annually
 - Each tenant has 1,000 to 250,000 historical contract pairs (input plus preferred edit)
@@ -14,7 +14,7 @@ Constraints from the May 2026 reality:
 - Per-query latency budget: under 1.2 seconds p99
 - Tenants on different compliance regimes: SOC 2, ISO 27001, HIPAA, FedRAMP Moderate
 
-The team picks per-tenant LoRA adapters on a shared base model. LoRA ([Hu et al., 2021](https://arxiv.org/abs/2106.09685)) and QLoRA ([Dettmers et al., 2023](https://arxiv.org/abs/2305.14314)) are mature; vLLM's multi-LoRA serving ([docs](https://docs.vllm.ai/en/latest/models/lora.html)) and SGLang's adapter swapping let many adapters share one base model in GPU memory. Anyscale and Together AI have both published production case studies on this pattern ([Anyscale 2024 post](https://www.anyscale.com/blog/fine-tuning-llms-lora-or-full-parameter-an-in-depth-analysis), [Together AI multi-LoRA serving](https://www.together.ai/blog/multi-lora-inference)).
+The team picks per-tenant LoRA adapters on a shared base model. LoRA ([Hu et al., 2021](https://arxiv.org/abs/2106.09685)) and QLoRA ([Dettmers et al., 2023](https://arxiv.org/abs/2305.14314)) are mature; vLLM's multi-LoRA serving ([docs](https://docs.vllm.ai/en/latest/features/lora/)) and SGLang's adapter swapping let many adapters share one base model in GPU memory. Anyscale published a LoRA-versus-full-fine-tuning comparison ([Anyscale 2024 post](https://www.anyscale.com/blog/fine-tuning-llms-lora-or-full-parameter-an-in-depth-analysis)), and managed providers sell the pattern with tight caps: Together AI's dedicated endpoints hold at most 16 loaded adapters per endpoint for Llama 3.3 70B ([docs](https://docs.together.ai/docs/dedicated-endpoints/lora-adapter)), so 280 tenants would mean 18 endpoints. Hosted fine-tuning is not a dependable alternative: OpenAI is winding down its fine-tuning platform (organizations that never fine-tuned can no longer start, and existing customers lose new-job creation on January 6, 2027), so per-tenant customization belongs on weights the platform controls.
 
 ## Architecture
 
@@ -52,10 +52,10 @@ flowchart TB
 
 | Layer | Tech | Purpose |
 |-------|------|---------|
-| Base model | Llama 4 70B int8 | Shared across all tenants |
+| Base model | Llama 3.3 70B, 4-bit (AWQ) | Shared across all tenants |
 | Adapter | LoRA r=16 on attention layers, ~120 MB per tenant | Per-tenant adaptation |
 | Training | DeepSpeed ZeRO-3 on 8x H100 nodes | Tenant-isolated jobs |
-| Serving | vLLM 0.7+ with PagedAttention and multi-LoRA | One base, many adapters |
+| Serving | vLLM 0.30+ with PagedAttention and multi-LoRA | One base, many adapters; 0.30.0 is the security floor |
 | Adapter store | S3 with per-tenant KMS keys | Encrypted at rest |
 | Eval store | Per-tenant golden set, run on every retrain | Eval-as-PRD per tenant |
 
@@ -73,17 +73,17 @@ flowchart TB
 2. The router resolves the adapter version for that tenant.
 3. If the adapter is hot in GPU memory (LRU cache of 200 adapters per node), inference proceeds.
 4. If cold, the adapter is hot-swapped from S3 in 200 to 600 ms. We hide this latency by pre-warming based on tenant traffic patterns.
-5. vLLM runs the request with the adapter applied; PagedAttention shares KV cache across tenants safely because KV is request-scoped, not adapter-scoped.
+5. vLLM runs the request with the adapter applied; tenants share the GPU safely because PagedAttention keeps KV blocks request-scoped, not adapter-scoped, and a per-tenant cache salt stops prefix-cache reuse across tenants (see Key Design Decision 5).
 
 ## Key Design Decisions
 
 ### 1. LoRA r=16 over full fine-tuning
 
-A full 70B fine-tune per tenant costs about $4,500 in compute, produces a 140 GB artifact, and pins one H100. LoRA at r=16 costs $80 to $400 per tenant per retrain, produces a 120 MB artifact, and shares the GPU. The accuracy gap on our internal contract-analysis eval is 1.6 points on a 100-point composite. We accept that gap because the cost differential is 50x and the operational story (hot-swap, ephemeral artifacts) is dramatically simpler. The Anyscale post linked above ran a similar comparison and reached the same conclusion.
+A full 70B fine-tune per tenant costs about $4,500 in compute, produces a 140 GB artifact, and pins dedicated GPUs. LoRA at r=16 costs $80 to $400 per tenant per retrain, produces a 120 MB artifact, and shares the GPU. The accuracy gap on our internal contract-analysis eval is 1.6 points on a 100-point composite. We accept that gap because the cost differential is 50x and the operational story (hot-swap, ephemeral artifacts) is dramatically simpler. The Anyscale post linked above ran a similar comparison and reached the same conclusion.
 
 ### 2. Adapter swap budget and the noisy-neighbor problem
 
-vLLM's multi-LoRA support keeps adapters in GPU memory but each adapter consumes a few hundred MB. On an 80 GB H100 running a 70B base in int8 (about 40 GB), we have roughly 30 GB for adapters and KV cache. That budgets to roughly 200 adapters resident at once. We use LRU with traffic-aware pre-warming and tail-tenant pinning: the 30 tenants with strict latency SLAs are pinned and never evicted; the rest rotate. A tenant whose adapter is cold pays a 200 to 600 ms tail penalty. We surface that explicitly in the tenant SLA as a cold-start budget.
+vLLM's multi-LoRA support keeps resident adapters in GPU memory, and each one costs about its artifact size: roughly 120 MB for r=16 on Q, K, V and O across the 70B base's 80 layers. On an 80 GB H100 running a 70B base in 4-bit (about 40 GB), we have roughly 30 GB for adapters and KV cache, and KV cache needs most of it: 200 adapters on one GPU would eat about 24 GB. So we cap each GPU at 25 resident adapters (about 3 GB) and route with adapter affinity, sending a tenant only to the GPUs that already hold its adapter, which gives an 8-GPU node roughly 200 distinct adapters resident at once. We use LRU with traffic-aware pre-warming and tail-tenant pinning: the 30 tenants with strict latency SLAs are pinned and never evicted; the rest rotate. A tenant whose adapter is cold pays a 200 to 600 ms tail penalty. We surface that explicitly in the tenant SLA as a cold-start budget. Adapters train against the BF16 weights but serve on the 4-bit base, so the eval gate runs on the 4-bit serving stack to catch quantization drift before promotion.
 
 The noisy-neighbor failure: one tenant suddenly bursts to 10x normal traffic, pushing other adapters out of cache. Mitigation: per-tenant token-bucket rate limit at the gateway, plus dynamic adapter eviction protection for any adapter that served traffic in the last 60 seconds.
 
@@ -99,9 +99,13 @@ Multi-tenancy is a defense-in-depth problem. Training jobs run in per-tenant nam
 
 The base model is shared. The adapter is per-tenant. The KV cache is per-request. PagedAttention ([vLLM paper](https://arxiv.org/abs/2309.06180)) ensures KV blocks are isolated per request, so even though Tenant A and Tenant B share a GPU during a single inference batch, their attention computations and KV state do not mix. We audited this with red-team prompts: no cross-tenant leakage in 50K adversarial pairs.
 
+One feature breaks that guarantee on purpose: **automatic prefix caching** reuses KV blocks across requests that share a prefix, and a cache hit shows up as lower latency. That turns the prefix cache into a membership oracle: a tenant can time requests to learn whether someone else recently sent a given contract clause. We set a per-tenant `cache_salt` on every request so prefix blocks are never shared across tenants, and we pin vLLM at 0.30.0 or later, because a September 2026 advisory (GHSA-935w-9g4m-p28p) found that tool-continuation turns on vLLM's GPT-OSS `/v1/responses` path dropped the salt and reopened the oracle. We do not serve that path, but the lesson carries: salt handling lives in each code path, so every endpoint we enable gets its own cross-tenant timing test. The same floor also carries the 0.28.0 fixes, including CVE-2026-90553, where a malicious model repository's processor code ran even with `trust_remote_code` off; on a server that loads new artifacts all day, treat every artifact as untrusted input.
+
 ### 6. Model lifecycle and base-model refresh
 
 The base model is upgraded every 6 to 9 months. When the upgrade happens, all adapters must be re-trained against the new base. We run the re-train automatically using each tenant's stored training data; we run their eval suite; we ask the tenant to sign off before promoting. The full base-refresh cycle takes about 3 weeks for 280 tenants on 4 dedicated training nodes; we share the schedule publicly. Adapters that fail eval are flagged for manual review and the previous base+adapter pair stays in service until resolution.
+
+**The license is a base-selection criterion, not a footnote.** We sell a model-backed product to 280 companies, which several 2026 open-weight licenses treat as a separate commercial case. Qwen's Community License 1.0 (used for Qwen3.8-Flash-Next) requires a separate license for any model-as-a-service or coding or office-assistant business, with no revenue floor; Moonshot's Kimi K3 license requires a deal for model-as-a-service businesses above US$20M revenue in 12 months; Mistral Medium 3.5's modified MIT license grants no rights above US$20M in monthly revenue. Qwen3.8-27B and IBM Granite 4.2 (Apache 2.0) and GLM-5.3 (MIT, with a security review only for model-as-a-service businesses above US$10B in revenue) carry no gate at our size. Our current base, Llama 3.3 70B, ships under the Llama 3.3 Community License, whose gate (700 million monthly active users) is far above our size but which adds an acceptable-use policy and attribution terms we pass through to tenants. Legal reviews every candidate base's license before the eval bake-off, not after.
 
 ### 7. Why r=16 specifically
 
@@ -200,7 +204,7 @@ A network blip during S3 hot-swap corrupts the adapter bytes; vLLM loads it but 
 Per-tenant economics at our blended traffic:
 
 - Training: $80 to $400 per retrain; quarterly refresh
-- Serving: shared GPUs; per-token cost $0.18 per million input, $0.36 per million output (close to vendor-equivalent on Llama 4)
+- Serving: shared GPUs; per-token cost $0.18 per million input, $0.36 per million output (close to vendor-equivalent on Llama 3.3 70B)
 - Adapter storage: $0.04 per tenant per month at 120 MB
 - Eval: $5 per retrain
 - Total per tenant: $80 to $800 per quarter, depending on traffic
@@ -229,7 +233,7 @@ We hold SOC 2 Type II and are certified for ISO 27001. Customer audit packs incl
 
 ## What Strong Interview Candidates Cover
 
-- They cite vLLM's multi-LoRA serving and PagedAttention by name, and explain why KV cache isolation is the linchpin for shared-GPU multi-tenancy.
+- They cite vLLM's multi-LoRA serving and PagedAttention by name, explain why KV cache isolation is the linchpin for shared-GPU multi-tenancy, and know that prefix caching needs a per-tenant salt to stay isolated.
 - They distinguish eval-as-PRD per tenant from a single global eval; the former is mandatory for vertical AI.
 - They size the LoRA-vs-full-FT tradeoff with concrete numbers (cost ratio, accuracy gap, artifact size).
 - They name the noisy-neighbor problem and at least three mitigations (rate limit, pinning, eviction protection).
@@ -240,10 +244,10 @@ We hold SOC 2 Type II and are certified for ISO 27001. Customer audit packs incl
 
 - Hu et al., [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685)
 - Dettmers et al., [QLoRA: Efficient Finetuning of Quantized LLMs](https://arxiv.org/abs/2305.14314)
-- [vLLM Multi-LoRA serving docs](https://docs.vllm.ai/en/latest/models/lora.html)
+- [vLLM LoRA adapters docs](https://docs.vllm.ai/en/latest/features/lora/)
 - Kwon et al., [Efficient Memory Management for LLM Serving with PagedAttention](https://arxiv.org/abs/2309.06180)
 - Anyscale, [Fine-tuning LLMs: LoRA or full-parameter](https://www.anyscale.com/blog/fine-tuning-llms-lora-or-full-parameter-an-in-depth-analysis)
-- Together AI, [Multi-LoRA inference at scale](https://www.together.ai/blog/multi-lora-inference)
+- Together AI, [Serve multiple LoRA adapters on one endpoint](https://docs.together.ai/docs/dedicated-endpoints/lora-adapter)
 - Hamel Husain, [How to construct domain-specific evals](https://hamel.dev/blog/posts/evals/)
 - Eugene Yan, [Evals: Constructed for LLM Apps](https://eugeneyan.com/writing/evals/)
 - Microsoft, [DeepSpeed ZeRO-3](https://www.deepspeed.ai/training/)

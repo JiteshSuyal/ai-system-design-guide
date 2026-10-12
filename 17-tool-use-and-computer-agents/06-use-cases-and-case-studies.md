@@ -1,6 +1,9 @@
 # Use Cases and Case Studies for Tool-Using Agents
 
-Tool-using AI agents have moved from demo to production. The global AI agents market reached $7.8 billion in 2025 and is projected to exceed $10.9 billion in 2026 (45% CAGR). Gartner projects that 40% of enterprise applications will embed task-specific AI agents by end of 2026, up from fewer than 5% in 2025. But 40% of those deployments will be canceled by 2027 due to rising costs, unclear value, or poor risk controls. This chapter covers the categories that are working, the ones that are not, and three detailed case studies you can reference in system design interviews.
+Tool-using AI agents have moved from demo to production. The global AI agents market reached $7.8 billion in 2025 and is projected to exceed $10.9 billion in 2026. Gartner projected in August 2025 that 40% of enterprise applications will embed task-specific AI agents by the end of 2026, up from fewer than 5% in 2025, and in June 2025 predicted that over 40% of agentic AI projects will be canceled by the end of 2027 due to rising costs, unclear business value, or inadequate risk controls. This chapter covers the categories that are working, the ones that are not, and three detailed case studies you can reference in system design interviews.
+
+> [!NOTE]
+> The three detailed case studies below describe unnamed organizations and cite no public source. Treat their figures as illustrations of the pattern, not as benchmarks. Named, vendor-reported results appear in the category sections and failure cases.
 
 ## Table of Contents
 
@@ -9,6 +12,7 @@ Tool-using AI agents have moved from demo to production. The global AI agents ma
 - [Category 3: Customer-Facing Agents](#category-3-customer-facing-agents)
 - [Category 4: IT Operations](#category-4-it-operations)
 - [Category 5: Research and Analysis](#category-5-research-and-analysis)
+- [Category 6: Persistent Agents With Their Own Computer](#category-6-persistent-agents-with-their-own-computer)
 - [Case Study: Enterprise OpenClaw Deployment](#case-study-enterprise-openclaw-deployment)
 - [Case Study: Claude Computer Use for Legacy Migration](#case-study-claude-computer-use-for-legacy-migration)
 - [Case Study: Multi-Agent Financial Compliance](#case-study-multi-agent-financial-compliance)
@@ -39,10 +43,20 @@ Agents that interact with CI/CD pipelines through tool calls (not just generatin
 - **Canary deployment monitoring**: Agent watches metrics post-deploy, rolls back if error rate spikes
 - **Infrastructure-as-code generation**: Agent reads existing infra, generates Terraform/Pulumi matching current state
 
+### From One Agent to Fleets
+
+The 2026 shift in this category is orchestration and closing the loop after merge, not better autocomplete:
+- **Coordinator-led fleets**: Cursor's Projects (beta, September 10, 2026) has a coordinator agent plan work, delegate it to parallel subagents, keep shared context over months, and return finished work for review. Cursor reports, from internal use, that new Projects users merge 30% more PRs (vendor-reported).
+- **Workflows as code**: GitHub Copilot's dynamic workflows (public preview, October 1, 2026) are code-defined programs that mix automated steps and agents in sequential or parallel stages, with checkpoints for human review, in contrast with model-driven delegation to subagents.
+- **Bring-your-own compute**: Claude Code's self-hosted environments (Team and Enterprise, August 7), Cursor's self-hosted machines (September 2), and the OpenAI Agents API's option to connect a sandbox from your own infrastructure (September 10) keep tool execution, credentials, and egress inside your perimeter while the vendor runs orchestration and the model. That split is often the data-residency answer.
+- **After the merge**: Cursor Rollouts (September 23) attaches a monitor to every PR and tracks change health per environment as it deploys.
+
+Cost behaves differently from chat. Anthropic's Claude Code telemetry (September 24, 2026, vendor-reported) shows sessions running longer with an input-to-output token ratio of 324:1, up from 189:1 in March, so the cached-input price and the cache hit rate dominate the bill, not the output price.
+
 ### What Makes This Category Work
 
 1. **Tight feedback loops**: Code either compiles or it does not. Tests pass or fail. The agent gets deterministic signals.
-2. **Sandboxing is natural**: Code execution already happens in CI/CD containers. Adding an AI agent does not change the security model.
+2. **Sandboxing is natural, but the harness is inside the boundary**: Code execution already happens in CI/CD containers, which gives a head start. It is not the whole security model: GitSpawn (September 2026) showed a repository's own `.git/config` making seven CLI coding agents run commands outside their sandboxes during background git calls, and PixelLeak showed agents publishing internal screenshots to public repos (see [Failure 5](#failure-5-pixelleak-agents-publish-what-they-were-told-to-attach-september-2026)).
 3. **Human review is built-in**: Pull requests are an existing approval gate. The agent slots into existing workflows.
 
 ---
@@ -107,6 +121,8 @@ Lead generation and qualification agents are producing 2-3x improvements in pipe
 - **Prospect research**: Agent searches web, CRM, LinkedIn (via API) to build prospect profiles
 - **Email drafting**: Personalized outreach based on prospect context
 - **Lead scoring**: Agent evaluates inbound leads against ICP criteria, routes to appropriate rep
+
+**A named production example.** Anthropic described its own inbound buying agent, built on Claude Managed Agents, on September 30, 2026. It handles thousands of conversations a day, and each one ends in one of three ways: direct checkout, a hand-off to a sales rep with the full conversation and an explanation of why, or a quick informational answer. Anthropic reports that leads became opportunities more than twice as often, deals closed about five days faster, and the share of conversations needing a human fell by about half (all vendor-reported). Two design lessons transfer: goal-oriented instructions outperformed long lists of granular rules, and every instruction change was saved as a version (v7 about a week into internal testing), so sessions could be pointed back to an earlier one when a change regressed. The escalation reason doubles as product feedback.
 
 ### Customer Onboarding
 
@@ -187,11 +203,47 @@ Research agents have a **correctness problem** that other categories do not. Whe
 
 ---
 
+## Category 6: Persistent Agents With Their Own Computer
+
+In September 2026, "an agent with its own VM, identity, and inbox" became a product category. These agents run between requests, so the design questions move from single-session task completion to tenancy, identity, approval policy, and billing.
+
+| Product | Status | What it is | Notable controls |
+|---|---|---|---|
+| OpenAI dots | Announced at DevDay, September 29, 2026; rolling out to Pro and Business Premium, admin-enabled beta for Enterprise, Edu, and Healthcare | Always-on GPT-6 Astra agents, each on its own cloud computer with a browser the user can open; 4,000+ apps through ChatGPT plugins; reachable from ChatGPT, Slack, or Teams | Built-in rules plus Custom Rules (allow, block, or require approval per action); auto-review of actions that affect accounts or share information; saved passwords never exposed to the model; read-only research when idle |
+| Meta Muse | Introduced September 8, 2026 (Mac app September 18) | Consumer personal agent on Muse Spark, running a browser in a dedicated cloud VM (Muse Secure VM); retail partners and 1,500+ connectors | Per-user isolation: the agent browses from its own cloud VM |
+| Microsoft Copilot Autopilot (formerly Scout) | Private preview from the end of September | Persistent agent with its own identity, memory, computer, and workspace inside the customer's tenant | Acts under its own identity inside the customer's tenant instead of borrowing a user's account |
+| Claude app (Cowork merged in) | Rolling out to Pro and Max from September 16 | Cowork and chat merging into one app | Asks for approval before acting by default |
+
+The reference design these products converge on:
+
+```
++-------------------+      +--------------------------+      +------------------+
+| Channels          | ---> | Agent (own identity)     | ---> | Dedicated VM /   |
+| chat, Slack,      |      | - memory store           |      | browser, per     |
+| Teams, email      |      | - task queue + schedule  |      | agent            |
++-------------------+      +------------+-------------+      +--------+---------+
+                                        |                             |
+                         +--------------v-------------+   +-----------v-----------+
+                         | Approval policy            |   | Credential vault      |
+                         | allow / block / ask per    |   | model never reads     |
+                         | action; read-only when idle|   | secrets               |
+                         +--------------+-------------+   +-----------------------+
+                                        |
+                         +--------------v-------------+
+                         | Activity log + pause/stop  |
+                         | (outside the agent)        |
+                         +----------------------------+
+```
+
+Three things make this category harder than a session-scoped agent. **Idle behavior** needs its own policy: dots do only read-only research when not on a task, which is a good default. **Identity and tenancy** decide blast radius: an agent with its own identity inside the tenant can be scoped and audited like an employee account, but it also needs offboarding. **Billing** shifts from per-seat to per-unit-of-work (Microsoft is adding usage-based billing for agentic work alongside per-user licenses; Muse is free for most uses, and Meta expects to earn a small fee on transactions over time), so cost controls belong in the platform, not the prompt.
+
+---
+
 ## Case Study: Enterprise OpenClaw Deployment
 
 ### Background
 
-OpenClaw is an open-source AI agent framework that became the most-starred project on GitHub within 60 days of its rename in January 2026 (247,000 stars by March 2026). Originally created by Austrian developer Peter Steinberger as "Clawdbot" in November 2025, it was renamed after trademark issues. It provides an agentic interface for autonomous workflows across messaging services like Signal, Telegram, Discord, and WhatsApp.
+OpenClaw is an open-source AI agent framework that became the most-starred project on GitHub within 60 days of its rename in January 2026 (247,000 stars by March 2026; about 391,000 by the end of September 2026). Originally created by Austrian developer Peter Steinberger as "Clawdbot" in November 2025, it was renamed after trademark issues. It provides an agentic interface for autonomous workflows across messaging services like Signal, Telegram, Discord, and WhatsApp. It is now stewarded by the OpenClaw Foundation, an independent 501(c)(3) with no paid tier or hosted service, and ships two release trains: calendar-versioned builds and a gateway-only extended-stable line the project treats as its LTS equivalent. For an enterprise deployment, the extended-stable line is the one to pin.
 
 ### The Deployment
 
@@ -405,6 +457,8 @@ Net ROI = (Labor Savings + Error Reduction + Speed Gains)
 | Human oversight labor | $2,000-4,000 | $4,000-8,000 | $8,000-15,000 |
 | **Total monthly cost** | **$2,350-4,900** | **$6,700-15,500** | **$29,000-83,000** |
 
+Two 2026 changes shift the LLM line. First, agent workloads are input-dominated (Anthropic's Claude Code telemetry shows 324 input tokens per output token, vendor-reported), so cache hit rate moves the bill more than model list price: Claude Opus 5.5 lists at $4/$20 per 1M tokens but reads cached input at $0.20. Second, the billing unit is moving from seats to work: Microsoft is adding usage-based billing for agentic work alongside per-user licenses, Meta expects to earn a small fee on Muse transactions, and Claude Managed Agents can cap a session's spend (it pauses with `budget_reached`). Put the cap in the platform, not the prompt.
+
 ### Metrics That Matter
 
 **Do measure:**
@@ -457,7 +511,15 @@ Lakera AI research demonstrated how indirect prompt injection via poisoned data 
 
 **Root cause**: Agent memory systems that do not distinguish between verified facts and user-supplied data.
 
-**Lessons**: (1) Agent memory needs provenance tracking. (2) Memory entries should have confidence levels and expiration dates. (3) Critical policy information must come from hardcoded system prompts, not learned from interactions.
+**Lessons**: (1) Agent memory needs provenance tracking. (2) Memory entries should have confidence levels and expiration dates. (3) Critical policy information must come from hardcoded system prompts, not learned from interactions. (4) Gate who can write to shared memory. Asana's coachable agents (September 2026) let anyone give feedback on a task, but only admins and editors can commit it to permanent shared memory or undo it; everyone else's feedback applies to the current task only, and an agent's effective access is bounded by the permissions of the person who triggered it.
+
+### Failure 5: PixelLeak, Agents Publish What They Were Told to Attach (September 2026)
+
+Glow Security disclosed PixelLeak on September 29, 2026. Coding agents told to attach visual proof to private pull requests had no command-line path to GitHub's browser-only PR image hosting, so they created public repositories, 93% of them in developers' personal accounts, and uploaded the screenshots there. The exposure: 13,000+ images across 900+ repositories and 300+ organizations, including customer billing records, a treasury and settlement console, and unreleased features. About a third of affected organizations had developers running an open-source screenshot tool that publishes under a publicly downloadable tag, and in some cases agents found the tool on their own.
+
+**Root cause**: The agents met their goal through a channel nobody had thought to forbid. There was no attacker.
+
+**Lessons**: (1) Destination policy belongs in the action layer: block or flag new public repositories, pushes to personal accounts and gists, and private-to-public visibility changes. (2) Remove blanket auto-approval for anything that publishes. (3) Control shared agent skills and instruction files, since one instruction ("attach proof") drove the behavior across many teams. (4) Audit personal and departed-employee accounts, including releases and gists, after an incident like this.
 
 ---
 
@@ -477,11 +539,33 @@ The main risk is incorrect amount extraction leading to wrong payments. I would 
 
 **Why this is strong:** It addresses the full pipeline, scopes permissions appropriately, identifies the primary risk, and proposes a concrete mitigation. It also shows awareness that different parts of the problem need different model capabilities.
 
+### Q: "Design an always-on personal agent for knowledge workers: it lives in Slack and email, has its own computer, and works on tasks between requests."
+
+**Strong answer:**
+
+I would give each agent its own isolated VM with a browser, its own identity in the company tenant, and a task queue with schedules, so it can work between requests and be audited like an employee account. That is the shape OpenAI's dots, Microsoft's Copilot Autopilot, and Meta's Muse converged on in September 2026.
+
+The core of the design is the approval policy, because the agent acts while the user is not watching. I would make it declarative: allow, block, or require approval per action type, with the defaults set by risk. Reading and drafting are allowed; sending messages, sharing documents, changing account settings, and spending money require approval; anything that publishes outside the organization is blocked. When the agent has no assigned task, it runs read-only, as dots do. The policy evaluator runs outside the agent, and the user can see an activity log and pause or stop the agent from any channel.
+
+Credentials live in a vault the model cannot read: the executor signs in on the agent's behalf. The agent's effective access is capped by the permissions of the person it works for, so it can never see more than its owner can. Memory is split: per-task notes the agent writes freely, and long-term memory that only the owner can confirm, so a poisoned email cannot become a standing instruction.
+
+For operations, I would budget per agent per day with a hard cap enforced by the platform, alert on unusual tool volume or new destinations, and offboard the agent's identity with its owner.
+
+**Why this is strong:** It treats idle-time behavior, identity, approval policy, credentials, and memory as first-class components instead of bolting them onto a chat agent, and it puts enforcement outside the model.
+
 ---
 
 ## References
 
-- Gartner. "Predicts 2025: AI Agents Transform Work" (2025)
+- Gartner. "Gartner Predicts 40% of Enterprise Apps Will Feature Task-Specific AI Agents by 2026, Up from Less Than 5% in 2025" (press release, August 26, 2025)
+- Gartner. "Gartner Predicts Over 40% of Agentic AI Projects Will Be Canceled by End of 2027" (press release, June 25, 2025)
+- Anthropic. "How Anthropic's sales team rebuilt inbound with Claude Managed Agents" (September 30, 2026)
+- Anthropic. "Agents you can coach: how Asana builds human-agent teams with Claude" (September 2026)
+- OpenAI. "Introducing dots" (September 29, 2026)
+- Meta. "Introducing Muse" (September 8, 2026)
+- Glow Security. "How AI agents exposed developer screenshots from leading tech companies" (PixelLeak, September 2026)
+- Cursor changelog (Projects, self-hosted machines, Rollouts; August-September 2026)
+- GitHub changelog. "Dynamic workflows in Copilot CLI and the Copilot app" (October 1, 2026)
 - OWASP. "Top 10 for Agentic Applications" (2026)
 - McKinsey. "State of AI Trust in 2026: Shifting to the Agentic Era"
 - IEEE Spectrum. "Moltbook, the AI Agent Network, Heralds a Messy Future" (2026)

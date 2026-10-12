@@ -38,7 +38,7 @@ flowchart TB
 
     subgraph Explain["Explanation Generation"]
         TOP10 --> BATCH[Batch Explanation Request]
-        BATCH --> LLM[GPT-4o-mini<br/>Cached Explanations]
+        BATCH --> LLM[GPT-6 Luna<br/>Cached Explanations]
         LLM --> RESPONSE[Recommendations + Reasons]
     end
 ```
@@ -49,17 +49,17 @@ flowchart TB
 
 ### 1. Why Not Just Use LLM for Everything?
 
-**Answer:** Scale economics. Calling an LLM for 50M users × 10 recommendation sets/day = 500M LLM calls daily. At $0.001 per call, that is $500K/day. Instead:
+**Answer:** Scale economics and latency. Ranking with an LLM means one call per recommendation set: 5M daily active users × 10 sets = 50M calls per day, each carrying the user's history plus about 100 candidate descriptions (call it 15K input tokens). Even on a small model like GPT-6 Luna ($0.10/$0.50 per 1M tokens) that is about $0.0016 per call, or roughly $80K per day, and a 15K-token prefill does not fit a 200ms p95. Instead:
 
 | Component | Role | Cost per User/Day |
 |-----------|------|-------------------|
 | Embedding lookup | Fetch precomputed vector | $0.00001 |
 | ANN search | Find candidates | $0.0001 |
 | Cross-encoder rerank | Score top 100 | $0.001 |
-| LLM explanation | Natural language | $0.005 |
-| **Total** | | **$0.006** |
+| LLM explanation | 100 explanations/day, 95% from cache, ~500 input + 40 output tokens per miss on GPT-6 Luna | $0.0004 |
+| **Total** | | **~$0.0015** |
 
-The LLM is only used for the final explanation, not the ranking itself.
+The LLM is only used for the final explanation, not the ranking itself. At a 95% cache hit rate on a small model, the explanation is no longer the largest line; the cross-encoder is. About $7.5K per day across 5M daily active users.
 
 ### 2. Explanation Caching
 
@@ -75,7 +75,7 @@ if not explanation:
     cache.set(cache_key, explanation, ttl=86400)
 ```
 
-Cache hit rate: 85%+ after warmup.
+Cache hit rate: 85%+ after warmup. Pre-generating explanations for new content pairs offline, through the Batch or Flex tier (50% off list on GPT-6 Luna), is what lifts it to the 95% the latency budget needs.
 
 ### 3. Cold-Start Handling
 
@@ -119,6 +119,8 @@ Reason category: {reason_type}
 Explanation:
 """
 ```
+
+Note the tension with the pair-level cache: cached text cannot mention this user's other titles. Personalization comes from choosing the source movie from the user's own recent history (the source movie is part of the cache key). Per-user wording like the prompt above is generated only for high-value surfaces and is **never written to the shared pair cache**: a cached sentence that names one user's recent watches would be served to everyone who hits that key, which breaks the privacy constraint. Cache it per user, or not at all.
 
 ---
 

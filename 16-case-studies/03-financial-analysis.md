@@ -8,7 +8,7 @@ This case study covers designing a high-reliability AI system for generating equ
 - [Requirements Analysis](#requirements-analysis)
 - [Architecture Design](#architecture-design)
 - [Ensemble Pipeline](#ensemble-pipeline)
-- [Fact Verification](#fact-verification)
+- [Fact Verification](#stage-3b-fact-verification-with-multi-agent-debate)
 - [Quality Gates](#quality-gates)
 - [Results and Metrics](#results-and-metrics)
 - [Interview Walkthrough](#interview-walkthrough)
@@ -86,7 +86,7 @@ The pipeline as a flow. Each stage uses a different model class on purpose: extr
 
 ```mermaid
 flowchart LR
-    S1[Stage 1: Extraction<br/>Gemini 3 Pro<br/>Self-Consistency k=5] --> S2
+    S1[Stage 1: Extraction<br/>Gemini 3.8 Flash<br/>Self-Consistency k=5] --> S2
     S2[Stage 2: Analysis<br/>Mixture of Agents<br/>Quant + Narrative + Risk] --> S3
     S3[Stage 3: Verification<br/>Multi-Agent Debate<br/>3 models per claim] --> S4
     S4[Stage 4: Final Review<br/>Panel of Judges<br/>Quality score] --> D{Auto-publish<br/>threshold met}
@@ -168,64 +168,82 @@ flowchart TD
 
 ## Ensemble Pipeline
 
-### Stage 1: Multimodal Data Extraction (Gemini 3 Pro)
+### Stage 1: Multimodal Data Extraction (Gemini 3.8 Flash)
 
 ```python
+from google import genai
+from google.genai import types
+
 class FinancialDataExtractor:
     """
-    Using Gemini 3 Pro to handle complex 10-K tables and charts natively.
+    Gemini 3.8 Flash (GA) reads 10-K tables and charts as page images plus text.
+    Gemini 3.1 Pro is still a preview model, and preview models carry weaker
+    lifecycle guarantees than a compliance pipeline should depend on.
     """
+    def __init__(self):
+        self.client = genai.Client()
+
     async def extract_metrics(self, doc_pages: list[bytes]) -> dict:
-        # Gemini 3 Pro processes charts/tables as images + text natively
-        response = await genai.GenerativeModel("gemini-3.0-pro").generate_content(
-            [{"text": "Extract all balance sheet items into JSON."}, *doc_pages]
+        response = await self.client.aio.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=[
+                "Extract all balance sheet items into JSON.",
+                *[types.Part.from_bytes(data=p, mime_type="image/png") for p in doc_pages],
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=BalanceSheet,  # Pydantic model: fixed field names and types
+            ),
         )
         return json.loads(response.text)
 ```
 
-### Stage 2: Analysis Generation (Claude 4.5 Opus)
+### Stage 2: Analysis Generation (Claude Opus 5.5)
 
 ```python
 class AnalysisEngine:
     """
-    Claude 4.5 Opus for deep qualitative synthesis and narrative coherence.
+    Claude Opus 5.5 for qualitative synthesis and narrative coherence.
     """
     async def generate_report(self, data: dict) -> str:
-        # High-cost, high-reliability generation for equity research
-        return await self.anthropic.messages.create(
-            model="claude-4.5-opus-20251101",
-            messages=[{"role": "user", "content": f"Analyze: {data}"}]
+        response = await self.anthropic.messages.create(
+            model="claude-opus-5-5",
+            max_tokens=16000,
+            output_config={"effort": "high"},  # Opus 5.5 defaults to medium; set it explicitly
+            messages=[{"role": "user", "content": f"Analyze: {data}"}],
         )
+        return "".join(b.text for b in response.content if b.type == "text")
 ```
 
-### Stage 3: Audit & Verification (o3 Reasoning Model)
+### Stage 3a: Reasoning Audit (GPT-6.1 Sol)
 
 ```python
 class AuditorAgent:
     """
-    Using o3 (OpenAI) with high reasoning budget to audit claims.
-    Thinking mode is used to detect subtle accounting contradictions.
+    GPT-6.1 Sol at high reasoning effort audits claims for subtle accounting
+    contradictions. A different model family from the generator is less
+    likely to share the generator's blind spots.
     """
     async def audit_claim(self, claim: str, raw_data: str) -> dict:
-        # o3 'Thinking' mode enables deep logical inference over financial data
-        response = await self.openai.chat.completions.create(
-            model="o3-2025-12",
-            reasoning_effort="high",
-            messages=[{"role": "user", "content": f"Find any contradiction in: {claim} vs {raw_data}"}]
+        response = await self.openai.responses.create(
+            model="gpt-6.1-sol",
+            reasoning={"effort": "high"},
+            input=f"Find any contradiction between the claim and the data.\n"
+                  f"Claim: {claim}\nData: {raw_data}",
         )
-        return self.parse_audit(response)
+        return self.parse_audit(response.output_text)
 ```
 
-### Stage 3: Fact Verification with Multi-Agent Debate
+### Stage 3b: Fact Verification with Multi-Agent Debate
 
 The debate stage is what catches the subtle hallucinations a single model misses. Three independent debaters verify each claim in parallel; consensus wins, dissent flags the claim for human review:
 
 ```mermaid
 sequenceDiagram
     participant CE as Claim Extractor
-    participant D1 as Debater A<br/>Claude 4.5 Opus
-    participant D2 as Debater B<br/>GPT-5.2
-    participant D3 as Debater C<br/>Gemini 3 Pro
+    participant D1 as Debater A<br/>Claude Opus 5.5
+    participant D2 as Debater B<br/>GPT-6.1 Sol
+    participant D3 as Debater C<br/>Gemini 3.8 Flash
     participant CON as Consensus Logic
     participant OUT as Verification Result
 
@@ -397,7 +415,7 @@ class HumanReviewQueue:
 | Metric | Manual Process | AI Pipeline | Improvement |
 |--------|---------------|-------------|-------------|
 | Time per report | 8 hours | 25 minutes | 19x faster |
-| Cost per report | $500 | $42 | 92% reduction |
+| Cost per report | $500 | $41 | 92% reduction |
 | Factual error rate | 2.1% | 0.4% | 81% reduction |
 | Human review load | 100% | 28% | 72% reduction |
 
@@ -410,17 +428,21 @@ class HumanReviewQueue:
 | Panel quality score | 4.0/5.0 | 4.2/5.0 |
 | Regulatory compliance | 100% | 100% |
 
-### Cost Breakdown (Dec 2025)
+### Cost Breakdown (October 2026 List Prices)
 
-| Component | Cost | Percentage |
-|-----------|------|------------|
-| Data extraction (Gemini 3 Pro) | $5 | 11% |
-| Analysis (Claude 4.5 Opus) | $20 | 44% |
-| o3 Thinking-Audit (High) | $15 | 33% |
-| Infrastructure & Vector Ops | $5 | 12% |
-| **Total** | **$45** | 100% |
+Assumes ~200K tokens of source material per report (10-K, two 10-Qs, an earnings call transcript) and ~150 extracted claims. Gemini 3.8 Flash is priced at its January 1, 2027 list rate ($1.50 / $7.50), not the introductory rate.
 
-*Note: o3 auditing represents 33% of the cost but catches 98% of hallucinations that Claude 4.5 misses, justifying the 'Thinking' token premium.*
+| Component | Assumption | Cost | Share |
+|-----------|------------|------|-------|
+| Extraction (Gemini 3.8 Flash, k=5) | 5 × 200K tokens in, ~75K out in total | $2.06 | 5% |
+| Analysis (Claude Opus 5.5, Mixture of Agents) | 3 proposers × 220K in plus an aggregator; ~48K out including thinking | $3.78 | 9% |
+| Reasoning audit (GPT-6.1 Sol, high effort) | ~300K in across per-claim calls (each well under the 272K long-context threshold), ~50K out | $1.10 | 3% |
+| Debate verification (3 model families) | 150 claims × 3 debaters × 2 rounds × ~8K in / 1K out | $29.25 | 70% |
+| Panel review | 3 mid-tier judges × ~40K in / 2K out | $0.28 | 1% |
+| Infrastructure and vector ops | | $5.00 | 12% |
+| **Total** | | **~$41** | 100% |
+
+*Note: Generation is cheap; verification is the bill. Debate fan-out (claims × debaters × rounds) is about 70% of spend, and Opus 5.5 alone accounts for $15.60 of it. The lever is the claim count: deduplicate claims, and skip debate for numbers that already match the Stage 1 structured data exactly. Prompt caching the source excerpts between debate rounds cuts the input side further (caches are per model, so each debater keeps its own).*
 
 ---
 

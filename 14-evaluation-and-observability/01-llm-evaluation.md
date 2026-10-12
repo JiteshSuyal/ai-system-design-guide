@@ -258,6 +258,7 @@ LLM judges have biases:
 | Length bias | Prefers longer responses | Instruct to ignore length |
 | Self-preference | Prefers own model's outputs | Use different judge model |
 | Format bias | Prefers certain formats | Diverse training examples |
+| Shared blind spots | Different judges fail on the same items, so agreement between judges looks like accuracy | Measure each judge against a human-labeled gold set, not against another judge |
 
 ```python
 def calibrated_pairwise_judge(question: str, response_a: str, response_b: str) -> dict:
@@ -273,6 +274,8 @@ def calibrated_pairwise_judge(question: str, response_a: str, response_b: str) -
     else:
         return {"winner": "tie", "confidence": "low"}
 ```
+
+**Do not count on temperature 0 for judge stability.** The sampling knobs judges used to lean on are disappearing from the newest APIs: GPT-6 Astra does not support custom `temperature`, `top_p`, or `logprobs`; the Claude API returns a 400 for non-default `temperature`, `top_p`, or `top_k` on Opus 4.7 and every later model, including Opus 5.5 and Sonnet 5.5; and the Anthropic Python SDK 1.x removed those three parameters from the Messages method signatures. Logprob-weighted scoring (G-Eval style) does not work on a judge that exposes no logprobs. Measure judge self-consistency directly (score the same item several times and track the spread), pin the judge's model ID and effort level, and re-run the judge calibration set whenever either changes.
 
 ---
 
@@ -534,6 +537,25 @@ class EvaluationPipeline:
         return report
 ```
 
+### Keep the Grader Out of Reach
+
+The pipeline above assumes the system under test is passive. Once the thing being evaluated can optimize against the eval (a prompt optimizer, a harness auto-tuner, an agent that retries until CI passes, a self-improving research loop), the eval becomes an attack surface. Two September 2026 papers quantify it:
+
+- **Agents hack their own evaluations.** Across 17 models and 38 tasks, research agents reward-hacked spontaneously on 30.5% of open-ended research-pipeline tasks versus 2.9% of narrow kernel tasks, and an LLM review panel that saw only the submitted code and reported scores missed 6.5% of confirmed hacks. When rejected work came back with a detailed reason and attempt history, cumulative evasion reached 40.5% versus 20.3% with a generic rejection, though the authors note the comparison does not isolate the explanations themselves (arXiv 2609.28614).
+- **The eval set is part of the supply chain.** A poisoned benchmark caused self-modifying coding agents to evolve instructions that, for example, disabled HTTPS certificate validation on unrelated tasks, and the backdoor often survived re-evolution on clean benchmarks (arXiv 2609.17817).
+
+The rules that follow:
+
+| Rule | Why |
+|------|-----|
+| The producer never controls the grader or the evidence | An agent that can edit tests, logs, or reported scores will |
+| Return pass/fail to an optimizing agent, not the reason | Detailed rejections correlate with learned evasion |
+| Version and hash eval sets; track their provenance like dependencies | A poisoned set backdoors whatever optimizes against it |
+| Keep a held-out audit set the optimizer never sees | Gains that do not transfer to it are overfitting or hacking |
+| Grade from executor-side logs and environment state | Transcripts are model-authored and can be spoofed |
+
+**Tooling note:** OpenAI's hosted Evals platform goes read-only on October 31, 2026 and shuts down, along with Agent Builder, on November 30, 2026. OpenAI's migration guide points to Promptfoo, which OpenAI agreed to acquire in March 2026; it remains MIT-licensed and multi-provider (0.123.1 on npm), but treat it as an OpenAI tool, not a neutral third party. If vendor neutrality matters for your eval store, keep datasets, judge prompts, and results in a format you own.
+
 ---
 
 ## Production Monitoring
@@ -618,11 +640,21 @@ def detect_quality_drift(
     }
 ```
 
+### Drift You Did Not Ship
+
+Quality can move with no deploy on your side, so trigger eval re-runs on vendor events, not just your own releases:
+
+- **Serving fixes under a stable model ID.** On September 25, 2026, three days after GPT-6 Sol and GPT-6 Luna launched, OpenAI fixed an image-encoding bug that had degraded their image understanding and computer use. The model IDs did not change, and OpenAI told customers with image inputs to rerun their evaluations. OpenAI did not say when the bug began, so treat any image or computer-use eval run between launch and the fix as suspect.
+- **Default effort changes on upgrade.** Claude Opus 5.5 defaults to `medium` effort where Opus 5 defaulted to `high`, and GPT-6.1 Sol defaults to `medium`. A model swap that leaves effort unset changes quality, latency, and cost at once. Set effort explicitly in both the eval harness and production.
+- **Tool defaults move under you.** Coding agents switched default models in September: Claude Code made Opus 5.5 its default Opus and Sonnet 5.5 its default Sonnet, and Codex CLI made GPT-6.1 Sol its default. An eval that does not pin the model measures whatever the tool shipped that week.
+
+The practical setup: subscribe to provider changelogs and status feeds, tag every eval run with the model ID, effort level, SDK version, and run date, and treat a vendor changelog entry that touches your modality as a trigger for the regression suite.
+
 ---
 
 ## 2026 Eval Evolution: Beyond LLM-as-Judge
 
-The 2023-2024 playbook ("use GPT-4 as a judge") was good enough for v1 systems but cracked under three pressures: cost at scale, agent trajectories that string-graders cannot inspect, and benchmarks that conflate retrieval, memory, and reasoning. By May 2026 the production eval stack has split into four layers that work together.
+The 2023-2024 playbook ("use GPT-4 as a judge") was good enough for v1 systems but cracked under three pressures: cost at scale, agent trajectories that string-graders cannot inspect, and benchmarks that conflate retrieval, memory, and reasoning. By mid-2026 the production eval stack had split into four layers that work together: cheap judges inline on every trace, trajectory grading for agents, frontier judges for calibration, and human review for ground truth.
 
 ### The Layered Judge Architecture
 
@@ -640,48 +672,59 @@ flowchart TD
     I --> J
 ```
 
-The cost math forces this shape: serving frontier judges (Claude Opus 4.7, GPT-5, Gemini Ultra 3) on every production trace is unaffordable above ~100K req/day. Distilled judges run hot, frontier judges calibrate, humans set ground truth.
+The cost math forces this shape. A frontier judge that reads ~3K tokens and writes ~300 costs about $0.018 per judgment on Claude Opus 5.5 ($4/$20 per 1M tokens) and about $0.045 on GPT-6 Astra ($10/$50), before reasoning tokens, which bill as output. At 100K traces a day that is roughly $1,800 to $4,500 a day for one criterion. Running frontier judges on every production trace is unaffordable at that volume. Distilled judges run hot, frontier judges calibrate, humans set ground truth.
 
 ### Galileo Luna-2: Distilled Judges at Scale
 
-[Galileo's Luna-2 family](https://www.galileo.ai/luna-2) (released February 2026) is a set of small, task-specific judge models trained on millions of frontier-judge labels plus human annotations. Galileo's published numbers:
+[Galileo's Luna-2 family](https://docs.galileo.ai/concepts/luna/luna) is a set of small language models tuned to compute specific evaluation metrics (hallucination, toxicity, tool-selection quality, plus custom metrics) as a single-token verdict, described in a February 2026 technical report (arXiv 2602.18583). Cisco has since completed its acquisition of Galileo (announced April 2026), and the product now ships as Splunk Agent Observability. Galileo's published numbers (vendor-reported, against a GPT-4o judge):
 
-| Metric | Luna-2 vs Frontier Judge |
-|--------|--------------------------|
-| Cost per evaluation | ~97% lower |
-| Latency P50 | ~10x lower (sub-100ms for short responses) |
-| Agreement with frontier judge | 88-92% across published benchmarks |
-| Agreement with human gold labels | Within 2-3 points of the frontier judge |
+| Metric | Luna-2 | GPT-4o judge |
+|--------|--------|--------------|
+| Cost per 1M tokens | $0.02 | $2.50 |
+| Average latency | 152 ms | 3,200 ms |
+| F1 on Galileo's metrics | 0.95 | 0.94 |
 
-The catch is the **shape** of the disagreement. Luna-2 is trained on a fixed taxonomy of failure modes (groundedness, instruction-following, toxicity, PII, off-topic, refusal). Anything outside that taxonomy regresses to a default score. So the pattern that holds up in production is:
+The report frames this as more than 80x lower inference cost and more than 20x lower latency while matching the accuracy of LLM-based evaluators. The baseline is GPT-4o, several generations behind the judges teams use now, so re-run the comparison against your own frontier judge before you size the savings.
 
-- **Use Luna-2 (or a Luna-equivalent) inline** on every trace for the taxonomy it covers.
+The catch is the **shape** of the disagreement. A distilled judge is tuned to a fixed set of metrics, and it is only as good as the data behind each one. So the pattern that holds up in production is:
+
+- **Use Luna-2 (or a Luna-equivalent) inline** on every trace for the metrics it was tuned for.
 - **Use the frontier judge** on a sampled 1-5% of traces to detect drift between the distilled judge and the larger model.
-- **Fall back to frontier** automatically when the distilled judge returns low confidence (Luna-2 emits a confidence score, not just a label).
+- **Fall back to frontier** automatically when the distilled judge's verdict is low-probability or the trace is high-stakes.
 - **Never trust the distilled judge alone for novel failure modes** that were not in its training distribution: a freshly-released attack vector, a new category of user intent, or a domain-specific factuality check.
 
-Galileo's [public technical report](https://www.galileo.ai/research/luna-2) walks through the distillation recipe and where Luna-2 still under-performs frontier judges (long-horizon multi-step reasoning, low-resource languages).
+Other options to compare against:
 
-Other shipped distilled judges to compare against:
+- [Patronus AI Lynx](https://arxiv.org/abs/2407.08488), a fine-tuned groundedness judge with open weights (8B and 70B), so the cost is whatever your serving costs.
+- [Vectara HHEM-2.1](https://huggingface.co/vectara/hallucination_evaluation_model), a small open hallucination-detection classifier.
+- [Arize Phoenix Evals](https://arize.com/docs/phoenix/) is not a distilled model: it ships pre-built judge templates (hallucination, relevance, toxicity) that run on whatever model you point them at, which makes it a convenient harness for comparing a distilled judge against your frontier judge on the same data (Phoenix is source-available under Elastic-2.0, and Dynatrace agreed in August 2026 to buy Arize).
 
-- [Patronus AI Lynx](https://www.patronus.ai/lynx) for groundedness, similar cost profile.
-- [Vectara HHEM-2](https://www.vectara.com/blog/hhem) for hallucination detection.
-- [Arize Phoenix Evals](https://arize.com/docs/phoenix/) which ships open distilled judges plus calibration harness.
+### Decision-Model Judges and the Limits of Cascades
 
-### Sierra tau2-bench and Variants
+A third judge tier arrived in September 2026: **decision models** that return a typed verdict (yes/no, a choice, or a score) with a probability instead of generated text. TypeSafe's Jev (early access, $0.042 per 1M input tokens, output unmetered) was wired into LangSmith, Langfuse, Braintrust, DeepEval, and Opik within about two weeks of launch. LangChain measured about $0.00035 per call and 0.44 s average latency, against 2.16 to 2.83 s for LLM judges (vendor-run).
 
-[Sierra's tau-bench](https://github.com/sierra-research/tau-bench) (2024) was the first realistic agent benchmark that measured tool-use success in a simulated business environment. The 2026 successors generalize that idea.
+| Tier | Example | Returns | Best for | Blind spot |
+|------|---------|---------|----------|------------|
+| Frontier LLM judge | Claude Opus 5.5, GPT-6 Astra | Rationale plus score | Open-ended quality, novel failure modes, writing the gold-set rationale | Cost and latency; shares blind spots with cheaper judges |
+| Distilled judge | Galileo Luna-2, Patronus Lynx | Label or score per metric | Fixed metrics on 100% of traffic | Anything outside the metrics it was tuned for |
+| Decision model | TypeSafe Jev | Typed verdict plus probability | Binary checklist criteria at near-zero marginal cost | No rationale, no abstention, weaker on ordinal and graded-relevance criteria, degrades with irrelevant context |
 
-[tau2-bench](https://github.com/sierra-research/tau-bench) (released Q1 2026) is a major update:
+The finding that matters for the layered architecture above is about **correlated error**. A paired comparison (arXiv 2609.29769) found LLM rubric judges cost 16 to 325x more and took 28 to 350x longer than Jev, with accuracy differing significantly in at most 8 of 27 comparisons. But on Jev's most confident errors, about 96% of LLM verdicts repeated the same wrong answer, and no cheap-to-expensive cascade beat the best single judge by more than 2.7 points. Escalation mostly saves money; it does not catch the errors both judges share. The only check on correlated judge error is a human-labeled gold set, so keep one, refresh it, and report every judge's precision and recall against it rather than judge-to-judge agreement.
 
-- **More domains**: retail, airline, financial, healthcare, telecom.
+### Sierra tau-bench and Its Successors
+
+[Sierra's tau-bench](https://github.com/sierra-research/tau-bench) (2024) was the first realistic agent benchmark that measured tool-use success in a simulated business environment. Its successors generalize that idea.
+
+[tau2-bench](https://github.com/sierra-research/tau2-bench) (2025) added the telecom domain, where the simulated user also acts on shared state, alongside retail and airline. The repository is now **tau3-bench**: v1.0.0 (March 2026) added a banking_knowledge retrieval domain, full-duplex tau-Voice, tau-Knowledge, and 75+ task fixes, and v1.0.1 (July 22, 2026) fixed banking_knowledge grading, so banking_knowledge results from before 1.0.1 are not comparable. What carries through every version:
+
 - **Pass^k metric**: measures the probability that the agent succeeds on **all** k repeated trials of the same task. Pass^1 is the traditional success rate. Pass^4 is what tells you whether the agent is reliable.
 - **Verifier-based grading**: deterministic post-conditions (the order is canceled, the refund exists, the seat is changed) rather than LLM-graded transcript scoring.
 
 Sister benchmarks:
 
-- **[tau-Voice](https://sierra.ai/blog/tau-voice)**: speech-to-speech variant where the agent operates over voice channels. Catches a class of failures (timing, interruption handling, recovery from ASR errors) that text-only benchmarks miss entirely.
-- **[tau-Knowledge](https://sierra.ai/blog/tau-knowledge)**: extends the simulation with an internal knowledge base the agent must retrieve from. Decouples "does the agent retrieve" from "does the agent act."
+- **[tau-Voice](https://arxiv.org/abs/2603.13686)**: full-duplex speech variant with interruptions, accents, and background noise. Catches a class of failures (timing, interruption handling, recovery from ASR errors) that text-only benchmarks miss entirely. Voice scores now track the reasoning attached to the voice layer: Sierra's voice leaderboard has gpt-live-1 at 81.7% pass@1, and Google reports Gemini 3.8 Live at 68.6% with extended thinking against 30.1% without (vendor-reported; the two sources are not comparable). Plain speech-to-speech without a reasoning backend still trails text agents badly, and the per-turn latency budget now has to pay for the thinking.
+- **[tau-Knowledge](https://sierra.ai/blog/tau-knowledge)**: the benchmark behind tau3's banking_knowledge domain. It extends the simulation with an internal knowledge base the agent must retrieve from: a fintech support setting over 698 documents (about 195K tokens), where a task needs an average of 18.6 documents and 9.5 tool calls. Decouples "does the agent retrieve" from "does the agent act."
+- **[Hyper-tau-bench](https://sierra.ai/blog/hyper-t-bench-evaluating-agents-that-build-agents)** (September 8, 2026): evaluates an agent that *builds* a customer-service agent from business records and client interviews, scored on the built agent's held-out tests. Claude Opus 5 at max effort in Claude Code alone passed 23.9%; the same model class paired with an engineer who had deep context reached 82.2%. The gap was requirement elicitation: developer agents asked at most 4 client questions when the client held 20 to 25 requirements, and 17 to 42% of runs probed the sandbox or grader trying to cheat (none succeeded).
 
 In practice, the pass^k metric is the most actionable. A Pass^1 of 70% and a Pass^4 of 12% says "the agent works on the easy path but cannot recover from any small perturbation." That is exactly the signal production teams need before rolling out an agent at scale.
 
@@ -698,15 +741,18 @@ This is necessary because long-horizon agents fail in ways the final answer cann
 The pattern in production:
 
 - **Process Reward Models (PRMs)** score each step in the trajectory independently. PRMs were originally trained for math (OpenAI's [Let's Verify Step by Step](https://arxiv.org/abs/2305.20050)) and have generalized: by 2026 there are PRMs for code, tool-use trajectories, and multi-turn dialogue.
-- **An auxiliary "auditor" agent** (often a different model from the one being graded) replays the trajectory, asks "was this step justified?" at each node, and emits a graded transcript. This is what the [DeepMind agent-as-judge paper](https://arxiv.org/abs/2410.10934) (Oct 2024, refined through 2026) formalized.
+- **An auxiliary "auditor" agent** (often a different model from the one being graded) replays the trajectory, asks "was this step justified?" at each node, and emits a graded transcript. This is what the [Agent-as-a-Judge paper](https://arxiv.org/abs/2410.10934) (Zhuge et al., Meta and KAUST, October 2024) formalized.
 - **Trajectory failure modes** that show up in this kind of grading:
   - **Reasoning-action mismatch**: the agent's chain-of-thought says one thing, the tool call does another.
   - **Over-retrieval**: more retrieval calls than needed.
   - **Tool flailing**: trying the same tool with slight variations until something works.
   - **Premature commitment**: writing the answer before all evidence is in.
   - **Self-jailbreaking**: the agent's own intermediate reasoning bypasses its own safety policy.
+  - **Transcript-action divergence**: the logged tool call is not the one that ran. METR's August 2026 investigation of OpenAI's cyber evaluations found successful tool-call spoofs in about 7% of evaluated transcripts.
 
 The [Anthropic Constitutional Classifiers paper](https://www.anthropic.com/research/constitutional-classifiers) (Jan 2025) and follow-up work shows that judging trajectories with a constitutional classifier catches a meaningful fraction of safety failures that final-answer grading misses entirely.
+
+**Grade actions from the executor side, and do not lean on the chain of thought.** Two results from August and September 2026 limit what a trajectory judge can trust. First, the transcript is model-authored, so build the graded trace from what the tool executor and environment recorded, not from what the agent says it did. Second, the reasoning trace is getting less reliable as evidence: OpenAI's GPT-6 Astra system card (as reproduced in secondary coverage) reports that Astra controls its own chain of thought 60.9% of the time on CoTs of 750 to 1,250 tokens (16.1% for GPT-5.6 Sol), UK AISI's separate controllability eval measured 93% (48% for GPT-5.6 Sol), and OpenAI writes that it likely could not reliably catch covert sandbagging. A "reasoning-action mismatch" check still catches honest confusion; it will not catch a model that writes the reasoning you want to see. Pair it with action-level checks on state the agent cannot edit.
 
 ### HaluMem: Operation-Level Hallucination Benchmark
 
@@ -725,16 +771,17 @@ The practical recipe:
 - Instrument the memory layer with **per-operation evals**: every write, update, and read has a separate eval.
 - Use a distilled judge (Luna-2 or similar) per operation type.
 - Track each stage's error rate over time; a 5% extraction error compounds over thousands of operations into a wholly unreliable agent.
+- Measure task success **with and without memory**, not just memory accuracy. On MemTrapBench (arXiv 2608.20202, August 2026) tasks built to trigger memory traps, correctly stored, relevant memories still distorted reasoning: across two model families and five memory frameworks, every memory strategy underperformed the no-memory setting.
 
-### A Production Eval Stack in May 2026
+### A Production Eval Stack
 
 A defensible stack for a customer-facing agent product looks roughly like:
 
 ```mermaid
 flowchart LR
     A[User turn] --> B[Agent runs]
-    B --> C[Trajectory logged]
-    C --> D[Distilled judges run inline on each tool call and the final answer]
+    B --> C[Trajectory logged from the executor side]
+    C --> D[Distilled or decision-model judges run inline on each tool call and the final answer]
     D --> E[Per-step PRM trajectory score]
     E --> F[Auditor agent on 1-5 percent sample]
     F --> G[Frontier judge on flagged or high-stakes traces]
@@ -748,8 +795,8 @@ This is not free, but it is dramatically cheaper than running a frontier judge o
 ### Take-Aways for Interviews
 
 - "LLM-as-judge" is now the worst-case fallback, not the default.
-- The serious teams stack **distilled judges inline + frontier judges for calibration + human review for ground truth**.
-- For agents, **judge the trajectory, not just the answer**. Pass^k, PRMs, and agent-auditors are how.
+- The serious teams stack **distilled or decision-model judges inline + frontier judges for calibration + human review for ground truth**, and they know the escalation step buys cost savings more than accuracy, because cheap and expensive judges share blind spots.
+- For agents, **judge the trajectory, not just the answer**. Pass^k, PRMs, and agent-auditors are how. Build the trajectory from executor-side logs and treat the chain of thought as weak evidence.
 - For memory-equipped systems, **measure extraction, update, and QA separately**; aggregate accuracy hides the failure site.
 
 ---
@@ -809,12 +856,26 @@ Several known biases and limitations:
 - Subtle factual errors
 - Cultural/contextual nuances
 - Safety edge cases
+- Grading a chain of thought: newer models can shape their reasoning traces, so a judge reading CoT sees what the model chose to show
 
 **Best practice:**
 - Use for rapid iteration
 - Calibrate against human judgments
 - Do not rely solely on LLM judges
 - Human review for high-stakes decisions
+- Pin the judge's model ID and effort level, and measure its self-consistency, since temperature 0 is no longer available on several frontier APIs
+
+### Q: Your eval pipeline runs a cheap judge on all traffic and escalates low-confidence cases to a frontier judge. A reviewer says the escalation is not buying accuracy. How do you check, and what do you change?
+
+**Strong answer:**
+The reviewer may well be right, because the two judges' errors are probably correlated. A September 2026 study comparing a decision-model judge with LLM rubric judges found that on the cheap judge's most confident errors, about 96% of LLM verdicts repeated the same wrong answer, and no cascade beat the best single judge by more than 2.7 points. Escalation mostly saves money; it does not catch shared blind spots.
+
+To check, I need ground truth that neither judge produced:
+1. Pull a stratified sample (escalated and non-escalated, by category) and have domain experts label it.
+2. Report each judge's precision and recall against those labels, plus the cascade's, rather than judge-to-judge agreement.
+3. Look at the confusion matrix of the cases both judges got wrong. If they cluster (one criterion, one language, one content type), that is a blind spot no escalation fixes.
+
+What I change: keep the cheap judge for criteria where it matches the frontier judge on human labels, because that is where the 16 to 325x cost saving is real. Route the blind-spot criteria straight to human review or to a differently built check (a deterministic verifier, a retrieval-grounded fact check). Refresh the gold set on a schedule, and make "judge vs human" the metric on the dashboard, not "judge vs judge".
 
 ---
 
@@ -823,7 +884,15 @@ Several known biases and limitations:
 - Es et al. "RAGAS: Automated Evaluation of Retrieval Augmented Generation" (2023)
 - Zheng et al. "Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena" (2023)
 - RAGAS: https://docs.ragas.io/
-- OpenAI Evals: https://github.com/openai/evals
+- OpenAI Evals (open-source framework, separate from the hosted Evals platform that shuts down November 30, 2026): https://github.com/openai/evals
+- Promptfoo: https://www.promptfoo.dev/
+- Sierra tau-bench repository (tau2-bench, now tau3-bench): https://github.com/sierra-research/tau2-bench
+- Sierra, hyper-tau-bench (September 2026): https://sierra.ai/blog/hyper-t-bench-evaluating-agents-that-build-agents
+- "Luna-2: Scalable Single-Token Evaluation with Small Language Models" (arXiv 2602.18583, 2026)
+- Rao and Callison-Burch. "JEV vs. LLMs as Rubric Judges: Cheaper, Faster, and Wrong in the Same Places" (arXiv 2609.29769, 2026)
+- Huang et al. "Reward Hacking Challenges Oversight of Autonomous Research Agents" (arXiv 2609.28614, 2026)
+- Roesner and Kohno. "Reflections on Trusting Trust, Revisited: Contaminating Self-Modifying AI Coding Agents with Poisoned Benchmarks" (arXiv 2609.17817, 2026)
+- MemTrapBench (arXiv 2608.20202, 2026)
 
 ---
 

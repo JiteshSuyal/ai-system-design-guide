@@ -20,7 +20,7 @@ Ensemble methods are critical for production reliability. This chapter covers mu
 Single-model outputs are unreliable for high-stakes applications:
 - Models hallucinate facts
 - Reasoning can be flawed
-- Outputs vary with temperature
+- Outputs vary from one sample to the next
 - Single-judge evaluations are biased
 
 Ensembles improve reliability through redundancy and diversity.
@@ -33,6 +33,7 @@ Ensembles improve reliability through redundancy and diversity.
 | Generation | Improve output quality | Self-Consistency, Best-of-N |
 | Verification | Reduce hallucinations | Multi-Agent Debate, Fact Checking |
 | Synthesis | Combine perspectives | Mixture of Agents |
+| Escalation | Spend strong-model compute only where needed | Cascade, Cross-Family Critique |
 
 ---
 
@@ -50,8 +51,8 @@ class PanelOfJudges:
     """
     def __init__(self, judges: list, aggregation: str = "mean"):
         # Use diverse model families, not just different sizes
-        # Good: [Claude, GPT-4, Gemini, Llama-70B]
-        # Bad: [GPT-4, GPT-4-turbo, GPT-3.5] - same family bias
+        # Good: [Claude Sonnet 5.5, GPT-6.1 Sol, Gemini 3.8 Flash, GLM-5.3]
+        # Bad: [GPT-6 Astra, GPT-6.1 Sol, GPT-6 Luna] - same family bias
         self.judges = judges
         self.aggregation = aggregation
     
@@ -84,9 +85,11 @@ class PanelOfJudges:
 
 **When to use:** High-stakes evaluations, benchmark creation, when single-judge bias is unacceptable.
 
+**Agreement is not accuracy.** Judges fail in correlated ways, so a panel that agrees can be confidently wrong together. A September 2026 study (arXiv 2609.29769) compared Jev, a decision model that returns typed scores instead of text, with LLM rubric judges: the LLM judges cost 16 to 325x more and took 28 to 350x longer, yet on Jev's most confident errors about 96% of LLM verdicts repeated the same wrong answer, and no cascade beat the best single judge by more than 2.7 points. Panels reduce variance and cascades cut cost; neither reliably catches a blind spot the judges share. Keep a human-labeled gold set and measure the panel against it, not against itself.
+
 ### Pairwise Comparison with Positional Debiasing
 
-Models prefer the first option 60-70% of the time. Always run both orderings:
+LLM judges show position bias, often favoring whichever answer appears first, and its size varies by judge and task (Zheng et al., 2023; Wang et al., 2023). Always run both orderings:
 
 ```python
 async def pairwise_compare_debiased(model, response_a: str, response_b: str, criteria: str) -> dict:
@@ -130,21 +133,24 @@ class SelfConsistencyDecoder:
     """
     Key parameters:
     - k (sample count): 5-10 for most tasks, 15-20 for hard math
-    - temperature: 0.5-0.8 for reasoning tasks
+    - temperature: 0.5-0.8 for reasoning tasks, where the API still accepts it
     
     Too low temperature = not enough diversity
     Too high temperature = too much noise
     """
     
-    def __init__(self, model, k: int = 7, temperature: float = 0.7):
+    def __init__(self, model, k: int = 7, temperature: float | None = 0.7):
         self.model = model
         self.k = k
-        self.temperature = temperature
+        self.temperature = temperature  # None for models with fixed sampling
     
     async def generate_with_consistency(self, prompt: str) -> dict:
+        # Pass temperature only if the target model accepts it
+        sampling = {} if self.temperature is None else {"temperature": self.temperature}
+        
         # Generate k reasoning paths in parallel
         responses = await asyncio.gather(*[
-            self.model.generate(prompt, temperature=self.temperature)
+            self.model.generate(prompt, **sampling)
             for _ in range(self.k)
         ])
         
@@ -179,7 +185,23 @@ class SelfConsistencyDecoder:
         pass
 ```
 
-**Best for:** Math, logic, coding with verifiable answers. Accuracy gain: 5-15%.
+**Best for:** Math, logic, coding with verifiable answers. The original paper's (Wang et al.) headline gains over greedy chain-of-thought ranged from +3.9 points (ARC-challenge) to +17.9 (GSM8K), measured on 2022-era models with no built-in reasoning. Do not carry those numbers over to a current reasoning model; measure the gain on your own eval set before paying k times the cost.
+
+### Sampling Controls Are Disappearing
+
+The classic recipe tunes temperature for diversity. On frontier APIs that knob is going away:
+
+| Platform | Status (October 2026) |
+|----------|-----------------------|
+| Claude API | Returns 400 for non-default sampling values on Opus 4.7 and later and on Sonnet 5 and later; the Anthropic Python SDK 1.0 (August 20, 2026) removed `temperature`, `top_p`, and `top_k` from Messages methods, so passing them raises `TypeError` |
+| Gemini API | `temperature`, `top_p`, and `top_k` deprecated on July 21, 2026; Gemini 3.8 Flash controls reasoning with `thinking_level` instead of `thinking_budget` |
+| OpenAI GPT-6 Astra | No custom `temperature` or `top_p`, and no `logprobs` |
+
+What this changes for ensembles:
+
+- **Diversity comes from elsewhere.** Default sampling on these models is already stochastic, so k samples still disagree. When they do not disagree enough, vary the prompt, the reasoning effort, or the model family instead of the temperature.
+- **Confidence comes from votes, not logprobs.** With no logprobs on Astra, vote share across samples (or a judge score) is the confidence signal.
+- **Do not ask the newest Claude models to write out their reasoning.** A prompt that demands a `<thinking>` section or a `reasoning` field in JSON can be refused under the `reasoning_extraction` category, and those refusals have been billed since September 24, 2026. Vote on final answers; if you need the path, ask for a short explanation, or set `thinking: {type: "adaptive", display: "summarized"}` and read the summarized thinking (at the default `display: "omitted"` these models return empty thinking blocks).
 
 ### Best-of-N with Reward Model
 
@@ -190,7 +212,7 @@ class BestOfNSampler:
     """
     Key considerations:
     1. N selection: N=4-8 for interactive, N=16-64 for batch
-    2. Reward model ensemble prevents reward hacking
+    2. Reward model ensemble reduces (does not prevent) reward hacking
     3. Monitor sample diversity - if too similar, BoN is wasted compute
     """
     
@@ -202,7 +224,7 @@ class BestOfNSampler:
     async def generate_best(self, prompt: str) -> dict:
         # Generate N candidates in parallel
         candidates = await asyncio.gather(*[
-            self.generator.generate(prompt, temperature=0.8)
+            self.generator.generate(prompt, temperature=0.8)  # drop on fixed-sampling models
             for _ in range(self.n)
         ])
         
@@ -213,7 +235,7 @@ class BestOfNSampler:
                 rm.score(prompt, candidate) for rm in self.reward_models
             ])
             
-            # Conservative aggregation prevents reward hacking
+            # Conservative aggregation makes reward hacking harder
             # Use 25th percentile instead of mean
             conservative_score = np.percentile(rm_scores, 25)
             
@@ -247,7 +269,7 @@ class BestOfNSampler:
         return 1 - np.mean(similarities)  # Higher = more diverse
 ```
 
-**Best for:** Open-ended generation, creative tasks. Accuracy gain: 10-30%.
+**Best for:** Open-ended generation, creative tasks. The gain is bounded by the scorer: against a proxy reward model, best-of-n improves true quality at first and can then degrade it as n grows (Gao et al., 2022), so check selections against human ratings and keep N modest.
 
 ---
 
@@ -330,7 +352,7 @@ Layered architecture where multiple models feed into aggregators:
 │                                                                  │
 │  Layer 1 (Proposers):                                           │
 │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐            │
-│  │ Claude  │  │  GPT-4  │  │ Gemini  │  │ Llama   │            │
+│  │ Claude  │  │  GPT-6  │  │ Gemini  │  │ Llama   │            │
 │  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘            │
 │       │            │            │            │                   │
 │       └────────────┴─────┬──────┴────────────┘                  │
@@ -377,6 +399,25 @@ Synthesize the best answer, combining the strongest elements from each response.
 
 **Best for:** Complex synthesis, report generation, multi-domain problems.
 
+### Cascades and Cross-Family Critique
+
+Two cheaper patterns are now showing up in developer tools. GitHub's HydraFusion, a research preview in VS Code and the Copilot app since September 30, 2026, orchestrates several models in one of three modes:
+
+- **Single:** one model, the baseline.
+- **Cascade:** an efficient model drafts, a quality gate decides, and the work escalates to a stronger model only when the gate fails it. Cost tracks the escalation rate, not the strong model's price.
+- **Critique:** a critic from a different model family reviews the draft and the drafter revises once. One round keeps the cost bounded, and a critic from another family is less likely to share the drafter's blind spots.
+
+```mermaid
+flowchart LR
+    Q[Task] --> D[Efficient model drafts]
+    D --> G{Quality gate}
+    G -->|Pass| O[Output]
+    G -->|Fail| S[Stronger model]
+    S --> O
+```
+
+The cascade is only as good as its gate. If the gate is a judge from the same family as the drafter, expect it to wave through the drafter's characteristic mistakes (the correlated-error result above), so prefer gates that check something verifiable: tests pass, schema validates, citations resolve.
+
 ---
 
 ## Ensemble vs Arbitration
@@ -411,15 +452,19 @@ Is there a single "correct" answer format?
 
 ### Ensemble Cost Matrix
 
-| Method | Cost Multiplier | Latency | Accuracy Gain | When to Use |
+| Method | Cost Multiplier | Latency | Expected Effect | When to Use |
 |--------|-----------------|---------|---------------|-------------|
 | Single Model | 1x | 1x | Baseline | Low-stakes, high-volume |
-| Self-Consistency k=3 | 3x | 1x (parallel) | +5-8% | Reasoning, latency-sensitive |
-| Self-Consistency k=10 | 10x | 1x (parallel) | +10-15% | Math, accuracy-critical |
-| Best-of-N (N=8) | 8x + scoring | 1x (parallel) | +15-25% | Creative generation |
+| Self-Consistency k=3 | 3x | 1x (parallel) | Modest; a three-way split has no majority | Reasoning, latency-sensitive |
+| Self-Consistency k=10 | 10x | 1x (parallel) | Larger on verifiable answers, with diminishing returns as k grows | Math, accuracy-critical |
+| Best-of-N (N=8) | 8x + scoring | 1x (parallel) | Bounded by the scorer; can degrade against a hackable reward model | Creative generation |
 | Panel of Judges (3) | 3x eval | 1x (parallel) | Bias reduction | Evaluation tasks |
 | Multi-Agent Debate | 6x | 3x | Hallucination ↓ | Fact-critical |
 | Mixture of Agents | 5-8x | 2x | Better synthesis | Complex reports |
+| Cascade with quality gate | 1x + gate + (escalation rate x strong model) | 1x, 2x on escalation | Near strong-model quality if the gate is reliable | High volume with a verifiable gate |
+| Cross-family critique (one round) | ~3x | ~3x (sequential) | Catches family-specific errors | Code review, fact-critical drafts |
+
+The effect column is directional on purpose. Effect sizes depend on the model and the task, so measure each method against a single-model baseline on your own eval set before paying the multiplier.
 
 ### When NOT to Use Ensembles
 
@@ -445,7 +490,7 @@ Is there a single "correct" answer format?
 - Classification: Vote on labels
 - Short-form QA: Vote on answer
 
-The key is you can compare answers for equality. Temperature 0.5-0.8 provides diversity while maintaining coherence. I use k=5-10 for most tasks.
+The key is you can compare answers for equality. Where the API exposes temperature, 0.5-0.8 provides diversity while maintaining coherence; on models with fixed sampling (newer Claude models, GPT-6 Astra) or deprecated sampling parameters (Gemini since July 2026) I rely on default sampling and add prompt or model variation if the samples agree too readily. I use k=5-10 for most tasks.
 
 **Best-of-N** is for open-ended generation where there is no single right answer:
 - Creative writing
@@ -468,22 +513,43 @@ I would not use Self-Consistency for creative writing (no extractable answer) or
 
 2. **Conservative aggregation**: Instead of using the mean score, use the 25th percentile or minimum. This selects samples that score well across all RMs, not just one.
 
-3. **Diversity monitoring**: Track sample diversity. If diversity drops too low, the model may be exploiting a narrow reward hack. I adjust temperature or use different prompts.
+3. **Diversity monitoring**: Track sample diversity. If diversity drops too low, the model may be exploiting a narrow reward hack. I vary the prompts or reasoning effort, or the temperature where the API still accepts it.
 
 4. **Human calibration**: Periodically validate that RM-selected samples actually match human preferences.
 
-5. **Multiple dimensions**: Score on multiple criteria (quality, safety, relevance) and require good scores on all, not just composite.
+5. **Multiple dimensions**: Score on multiple criteria (quality, safety, relevance) and require good scores on all, not just composite. A summed rubric lets strong criteria hide a failing one: a September 2026 rubric-RL study (arXiv 2609.38847) saw rubric coverage rise while appropriateness on held-out physician criteria fell below the untrained model, and counting a dimension only when all of its criteria pass raised appropriateness by 10.8 points without losing coverage. The same gate works for selecting among N samples.
 
 The key insight is that any single reward signal can be gamed. Ensembles make gaming much harder."
+
+### Q: Your panel of three LLM judges agrees on 95% of verdicts. Is that good news?
+
+**Strong answer:**
+
+"Not by itself. High agreement tells me the panel is consistent, not that it is right. Judges share training data and blind spots, so their errors correlate. A September 2026 comparison of a cheap decision-model judge against LLM rubric judges (arXiv 2609.29769) found that on the cheap judge's most confident errors, about 96% of LLM verdicts repeated the same wrong answer, and cascades added at most 2.7 points over the best single judge.
+
+**What I would check:**
+1. **Accuracy against a human-labeled gold set**, stratified by the criteria that matter. Agreement among judges is not a substitute.
+2. **Where the panel disagrees with humans together.** Those cases show the shared blind spot, and they are what I add to the gold set.
+3. **Real diversity.** Different model families, and for binary checklist criteria, a different judge type (a typed decision model rather than another LLM). Three judges from one family is one judge at three times the cost.
+4. **Position and length bias**, by swapping orderings and controlling for length.
+
+If the panel is accurate on the gold set, 95% agreement means I can probably drop to one or two judges and save money. If it is not, the agreement was hiding the problem."
 
 ---
 
 ## References
 
 - Verga et al. "Replacing Judges with Juries: Evaluating LLM Generations with a Panel of Diverse Models" (2024)
-- Wang et al. "Self-Consistency Improves Chain of Thought Reasoning" (2023)
+- Wang et al. "Self-Consistency Improves Chain of Thought Reasoning in Language Models" (ICLR 2023): https://arxiv.org/abs/2203.11171
+- Gao, Schulman, and Hilton. "Scaling Laws for Reward Model Overoptimization" (2022): https://arxiv.org/abs/2210.10760
 - Du et al. "Improving Factuality and Reasoning in Language Models through Multiagent Debate" (2023)
+- Wang et al. "Mixture-of-Agents Enhances Large Language Model Capabilities" (2024)
+- Zheng et al. "Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena" (2023)
+- Wang et al. "Large Language Models are not Fair Evaluators" (2023)
+- Rao and Callison-Burch. "JEV vs. LLMs as Rubric Judges: Cheaper, Faster, and Wrong in the Same Places" (arXiv 2609.29769, 2026): https://arxiv.org/abs/2609.29769
+- GitHub changelog, HydraFusion in VS Code and the GitHub Copilot app (September 30, 2026): https://github.blog/changelog/2026-09-30-hydrafusion-in-vs-code-and-the-github-copilot-app
+- Liu et al. "Scoring Higher, Answering Worse: Mitigating Reward Hacking in Rubric-Based RL via Protocol-Level Rubrics" (arXiv 2609.38847, 2026): https://arxiv.org/abs/2609.38847
 
 ---
 
-*Next: [Reliability Patterns Extended](03-reliability-patterns.md)*
+*Previous: [Guardrails and Safety](01-guardrails.md) · Next: [Reliability Patterns](03-reliability-patterns.md)*

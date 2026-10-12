@@ -4,14 +4,15 @@ Late Interaction is a retrieval paradigm that sits between fast-but-imprecise **
 
 ## Table of Contents
 
-- [The Retrieval Architecture Spectrum](#spectrum)
+- [The Retrieval Architecture Spectrum](#the-retrieval-architecture-spectrum)
 - [ColBERT Architecture](#colbert-architecture)
-- [MaxSim: The Core Scoring Mechanism](#maxsim)
-- [ColBERTv2 and PLAID Indexing](#colbertv2)
-- [Late Interaction vs. Alternatives](#comparison)
-- [Implementation with RAGatouille](#ragatouille)
-- [Production Deployment Patterns](#production)
-- [When to Choose ColBERT](#when-to-choose)
+- [MaxSim: The Core Scoring Mechanism](#maxsim-the-core-scoring-mechanism)
+- [ColBERTv2 and PLAID Indexing](#colbertv2-and-plaid-indexing)
+- [Multi-Vector in General-Purpose Vector DBs (MUVERA)](#multi-vector-in-general-purpose-vector-dbs-muvera)
+- [Late Interaction vs. Alternatives](#late-interaction-vs-alternatives)
+- [Implementation with RAGatouille](#implementation-with-ragatouille)
+- [Production Deployment Patterns](#production-deployment-patterns)
+- [When to Choose ColBERT](#when-to-choose-colbert)
 - [Interview Questions](#interview-questions)
 - [References](#references)
 
@@ -159,7 +160,7 @@ Score(Q, D) = SUM over all qi of MAX over all dj of (qi . dj)
 
 ## ColBERTv2 and PLAID Indexing
 
-The original ColBERT (2020) had a critical limitation: **storage**. Storing 128-dim vectors for every token in every document is expensive. A corpus of 10M documents with 200 tokens each would require ~256 GB of vector storage.
+The original ColBERT (2020) had a critical limitation: **storage**. Storing 128-dim vectors for every token in every document is expensive. A corpus of 10M documents with 200 tokens each is 2B token vectors: about 1 TB at float32, still 512 GB at float16.
 
 ### ColBERTv2 Improvements (2021)
 
@@ -200,38 +201,70 @@ PLAID (Performance-optimized Late Interaction Driver) is the indexing and retrie
 ┌─────────────────────────────────────────────────────────────────┐
 │                    PLAID RETRIEVAL PIPELINE                     │
 │                                                                 │
-│  Stage 1: CENTROID PRUNING                                      │
-│  ─────────────────────────                                      │
+│  Stage 1: CANDIDATE GENERATION                                  │
+│  ─────────────────────────────                                  │
 │  For each query token, find nearest centroids                   │
 │  Collect candidate passages that contain those centroids        │
 │  Result: ~10,000 candidates from millions                       │
 │                                                                 │
-│  Stage 2: CENTROID INTERACTION                                  │
-│  ─────────────────────────────                                  │
+│  Stage 2: CENTROID INTERACTION (with pruning)                   │
+│  ────────────────────────────────────────────                   │
+│  Drop centroids whose query score is below a threshold          │
 │  Approximate MaxSim using centroid-level scores only            │
 │  Filter candidates to top ~1,000                                │
 │                                                                 │
-│  Stage 3: CENTROID PRUNING (Fine)                               │
-│  ──────────────────────────────                                 │
-│  Decompress residuals for remaining candidates                  │
-│  Compute approximate MaxSim with residual vectors               │
+│  Stage 3: CENTROID INTERACTION (no pruning)                     │
+│  ──────────────────────────────────────────                     │
+│  Re-score survivors with all of their centroid IDs              │
+│  (still no residuals decompressed)                              │
 │  Filter to top ~100                                             │
 │                                                                 │
 │  Stage 4: FULL DECOMPRESSION                                    │
 │  ────────────────────────────                                   │
 │  Fully decompress token vectors for top candidates              │
-│  Compute exact MaxSim                                           │
+│  Compute full MaxSim on the decompressed vectors                │
 │  Return final ranked results                                    │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**The key insight**: PLAID avoids decompressing all vectors for all documents. Each stage cheaply filters the candidate set so that expensive exact scoring only happens on a tiny fraction of the corpus.
+**The key insight**: PLAID avoids decompressing all vectors for all documents. Each stage cheaply filters the candidate set so that expensive full scoring only happens on a tiny fraction of the corpus.
 
 **PLAID Performance**:
 - Retrieves from 10M+ documents in **50-100ms** on a single GPU
-- Maintains **exact MaxSim** accuracy (not approximate)
+- Computes full MaxSim only for the final candidates, over decompressed (lossy) residual vectors. The candidate stages are approximate, so recall depends on how aggressively you prune (`ncells`, centroid score threshold); measure it against exhaustive MaxSim on a sample
 - Uses centroid pruning to skip 99%+ of the corpus before full scoring
+
+---
+
+## Multi-Vector in General-Purpose Vector DBs (MUVERA)
+
+PLAID is a purpose-built engine, and most teams do not want a second search system just for late interaction. **MUVERA** (Multi-Vector Retrieval via Fixed Dimensional Encodings, Google Research, NeurIPS 2024) closes that gap: it turns a document's set of token vectors into one long fixed-length vector whose inner product approximates the MaxSim (Chamfer) score, so an ordinary single-vector ANN index can generate candidates.
+
+```
+INDEX:  doc token vectors ──► FDE transform ──► 1 fixed-length vector ──► HNSW / DiskANN
+                 └──────────────────────────────► keep the multi-vector set (compressed, on disk)
+
+QUERY:  query token vectors ──► FDE ──► ANN top-k candidates
+                                              └──► full MaxSim on stored multi-vectors ──► results
+```
+
+The shape is the same as PLAID (cheap approximate candidates, full MaxSim on a few hundred), but the candidate stage runs on infrastructure you already operate. FDEs are long (thousands of dimensions), so they are usually quantized.
+
+**Engine support, October 2026:**
+
+| Engine | Multi-vector support | Status |
+|--------|----------------------|--------|
+| **Milvus 3.0** | On-disk EmbList + DiskANN index for embedding lists, with MUVERA and LEMUR acceleration | GA July 29, 2026 (3.0.2 on Sep 20) |
+| **Weaviate** | Native multi-vector embeddings (1.29+), with optional MUVERA encoding on HNSW since 1.31 (2025); MUVERA for the disk-backed HFresh index is new in 1.40 | Multi-vector and MUVERA on HNSW shipping; the HFresh MUVERA path is in the 1.40 release candidates (rc.2 on Sep 30, 2026), not GA |
+| **Qdrant** | Native multivector fields scored with MaxSim | Shipping; Qdrant's open PubMed-Multi-Vector dataset (8.37B BGE-M3 token vectors) benchmarks dense vs sparse vs ColBERT |
+| **Vespa** | Native ColBERT tensor ranking | Shipping |
+
+Model side: Answer.AI published ONNX exports of NeuML's ColBERT-MUVERA micro and small models on September 18, 2026.
+
+### Compressing the Vectors Themselves
+
+The other lever is storing fewer vectors per document. For page-image retrievers (ColPali-style), the GLIE paper (arXiv 2609.11808, September 2026) finds that visual-document token vectors sit near a manifold of intrinsic dimension five to six on the unit sphere. Two practical results: renormalizing k-means centroids back onto the sphere is a free correction worth up to +0.093 nDCG@5 over raw centroids, and keeping 4 learned vectors per page plus a 415K-parameter decoder that regenerates the full set for top candidates retains nearly 80% of uncompressed nDCG@5 on ViDoRe v1, against 70% for the best prior post-hoc method. It is a single research result, not an engine feature, but it points the same way: compact representation for candidates, full multi-vector scoring only at the top.
 
 ---
 
@@ -266,7 +299,7 @@ PLAID (Performance-optimized Late Interaction Driver) is the indexing and retrie
                       10   100  1K   10K  100K
 ```
 
-**ColBERT occupies the sweet spot**: it is 3-5x more accurate than bi-encoders on domain-specific benchmarks (up to +13.8% mAP on specialized datasets) while being 10-50x faster than cross-encoders.
+**ColBERT occupies the sweet spot**: it typically adds a few NDCG points over a bi-encoder of similar size, with the largest gains on out-of-domain, term-heavy corpora (up to +13.8% mAP on specialized datasets), while being 10-50x faster than cross-encoders.
 
 ---
 
@@ -346,6 +379,7 @@ response = chain.invoke("What features does the Enterprise plan include?")
 | **Vespa** | Production-scale deployment | Managed infrastructure with native ColBERT support |
 | **PyLate** | Flexible training/fine-tuning | Built on Sentence Transformers, good for custom models |
 | **Jina ColBERT v2** | Multilingual (89 languages) | Flexible output dimensions, production-ready |
+| **Milvus 3.0 / Weaviate / Qdrant** | Multi-vector inside a general vector DB | MUVERA or native MaxSim; see the engine table above |
 
 ---
 
@@ -407,7 +441,7 @@ Best for: maximum accuracy at medium scale. Expensive but covers all retrieval m
 | 10M docs | ~30 GB | ~60-120 GB | 1-2 GPUs required |
 | 100M docs | ~300 GB | ~600 GB - 1.2 TB | Multi-GPU / distributed |
 
-**Reality check**: ColBERT's storage is 2-4x that of bi-encoders. For most RAG use cases (under 10M docs), this is manageable. For web-scale search (billions of pages), bi-encoders or learned sparse methods remain more practical for the first retrieval stage.
+**Reality check**: ColBERT's storage is 2-4x that of bi-encoders. For most RAG use cases (under 10M docs), this is manageable. For web-scale search (billions of pages), bi-encoders or learned sparse methods remain more practical for the first retrieval stage. MUVERA-style candidate generation on a disk-resident index (Milvus 3.0 DiskANN today, Weaviate HFresh once 1.40 is GA) moves the RAM ceiling up, because only the single-vector FDE index needs to be hot.
 
 ---
 
@@ -426,7 +460,11 @@ Is your corpus < 100M documents?
         │
         Can you afford 2-4x storage vs. bi-encoder?
         ├── No  ──► Use Bi-Encoder + Cross-Encoder reranker
-        └── Yes ──► Use ColBERT (PLAID) as primary retriever
+        └── Yes
+            │
+            Do you want to run a separate retrieval engine?
+            ├── No  ──► MUVERA / native multi-vector in your vector DB
+            └── Yes ──► Use ColBERT (PLAID) as primary retriever
 ```
 
 ### ColBERT vs. Dense Retrieval vs. Hybrid Search
@@ -449,24 +487,24 @@ Is your corpus < 100M documents?
 **Strong answer:**
 The three architectures differ in *when* the query and document interact:
 
-**Bi-encoders** encode query and document independently into single vectors. Interaction happens only via a dot product at the end. This is fast (pre-compute all document vectors, search in milliseconds) but loses fine-grained matching -- the entire document meaning is compressed into one point in vector space.
+**Bi-encoders** encode query and document independently into single vectors. Interaction happens only via a dot product at the end. This is fast (pre-compute all document vectors, search in milliseconds) but loses fine-grained matching: the entire document meaning is compressed into one point in vector space.
 
-**Cross-encoders** process the concatenated query + document through a single transformer. Full self-attention means every query token attends to every document token. This gives the highest accuracy but cannot pre-compute anything -- every query-document pair requires a full forward pass, making it infeasible for first-stage retrieval. Cross-encoders are used as rerankers on the top 10-100 candidates.
+**Cross-encoders** process the concatenated query + document through a single transformer. Full self-attention means every query token attends to every document token. This gives the highest accuracy but cannot pre-compute anything. Every query-document pair requires a full forward pass, making it infeasible for first-stage retrieval. Cross-encoders are used as rerankers on the top 10-100 candidates.
 
-**Late interaction (ColBERT)** encodes query and document independently (like bi-encoders), but into *per-token* vector matrices instead of single vectors. Scoring uses MaxSim -- for each query token, find its best-matching document token. This preserves token-level granularity while still allowing document pre-computation. The result is near-cross-encoder accuracy at near-bi-encoder speed.
+**Late interaction (ColBERT)** encodes query and document independently (like bi-encoders), but into *per-token* vector matrices instead of single vectors. Scoring uses MaxSim: for each query token, find its best-matching document token. This preserves token-level granularity while still allowing document pre-computation. The result is near-cross-encoder accuracy at near-bi-encoder speed.
 
-I would choose bi-encoders for large-scale first-stage retrieval where simplicity matters, cross-encoders for high-stakes reranking of small candidate sets, and ColBERT when I need the accuracy of a cross-encoder but cannot afford its latency -- particularly for domain-specific search where term-level matching matters (legal, medical, technical docs).
+I would choose bi-encoders for large-scale first-stage retrieval where simplicity matters, cross-encoders for high-stakes reranking of small candidate sets, and ColBERT when I need the accuracy of a cross-encoder but cannot afford its latency, particularly for domain-specific search where term-level matching matters (legal, medical, technical docs).
 
 ### Q: ColBERT stores one vector per token. How does it scale, and what are the storage tradeoffs?
 
 **Strong answer:**
-The naive storage cost of ColBERT is significant. A 200-token document requires 200 vectors of 128 dimensions each, versus 1 vector of 768-1024 dimensions for a bi-encoder. This means roughly 3-5x the storage per document.
+The naive storage cost of ColBERT is significant. A 200-token document requires 200 vectors of 128 dimensions each (25,600 floats), versus 1 vector of 768-1024 dimensions for a bi-encoder. That is roughly 25-33x the storage per document before compression.
 
-ColBERTv2 addresses this with **residual compression**: token vectors are clustered into centroids, and only the centroid ID plus a quantized residual is stored. This achieves 16-32x compression per token vector, bringing practical storage to about 2-4x that of a bi-encoder.
+ColBERTv2 addresses this with **residual compression**: token vectors are clustered into centroids, and only the centroid ID plus a quantized residual is stored. This achieves 16-32x compression per token vector, bringing practical storage to about 2-4x that of a float32 bi-encoder.
 
-The PLAID indexing engine further improves efficiency at query time by using a multi-stage pipeline. It starts with centroid pruning (fast, coarse) to eliminate 99% of candidates, then progressively decompresses residuals only for promising candidates. The final exact MaxSim is computed on fewer than 100 documents, keeping latency at 50-100ms even on 10M+ document corpora.
+The PLAID indexing engine further improves efficiency at query time by using a multi-stage pipeline. It generates candidates from the centroids nearest each query token, scores them on centroid IDs alone (pruning low-scoring centroids first) to eliminate 99% of the corpus, and decompresses residuals only for the final candidates. The final full MaxSim, over decompressed residual vectors, is computed on fewer than 100 documents, keeping latency at 50-100ms even on 10M+ document corpora. Because the candidate stages are approximate, I would measure recall against exhaustive MaxSim on a sample before tuning pruning aggressively.
 
-For scale beyond 100M documents, I would use ColBERT as a reranker rather than a primary retriever -- let a bi-encoder or BM25 do the first-stage retrieval to narrow the candidate set to 1,000 documents, then apply ColBERT's MaxSim for high-quality reranking.
+For scale beyond 100M documents, I would use ColBERT as a reranker rather than a primary retriever: let a bi-encoder or BM25 do the first-stage retrieval to narrow the candidate set to 1,000 documents, then apply ColBERT's MaxSim for high-quality reranking. If the team already runs Milvus, Qdrant or Weaviate, the middle path is MUVERA: index one fixed-dimensional encoding per document for ANN candidate generation and keep the compressed token vectors on disk for full MaxSim on the top few hundred.
 
 ### Q: You are designing a legal document search system with 5M documents. The team is debating between dense bi-encoder search with a cross-encoder reranker vs. ColBERT. What do you recommend?
 
@@ -475,7 +513,7 @@ I would recommend ColBERT for this use case for three reasons:
 
 First, **legal text is term-sensitive**. Contract clauses reference specific section numbers, defined terms (e.g., "Force Majeure"), and exact phrases. ColBERT's token-level MaxSim matching preserves these rare-but-critical terms that get diluted in a single-vector bi-encoder embedding.
 
-Second, **5M documents is squarely in ColBERT's sweet spot**. With ColBERTv2 compression, the index would be roughly 30-60 GB -- easily fits on a single GPU. This is small enough for primary retrieval, avoiding the need for a separate first-stage retriever.
+Second, **5M documents is squarely in ColBERT's sweet spot**. With ColBERTv2 compression, the index would be roughly 30-60 GB, which fits on a single 80 GB GPU. This is small enough for primary retrieval, avoiding the need for a separate first-stage retriever.
 
 Third, **cross-encoder reranking adds latency**. Each query-document pair requires a full transformer forward pass. Reranking 100 candidates with a cross-encoder might take 500ms-2s. ColBERT achieves comparable accuracy while keeping total latency under 100ms because document tokens are pre-computed.
 
@@ -489,9 +527,12 @@ The one area I would supplement ColBERT is with a parallel BM25 index for exact-
 - Santhanam et al. "PLAID: An Efficient Engine for Late Interaction Retrieval" (CIKM 2022)
 - Answer.AI. "RAGatouille: State-of-the-art Late Interaction Retrieval" (GitHub, 2024)
 - Jina AI. "Jina-ColBERT-v2: General-Purpose Multilingual Late Interaction Retriever" (2024)
+- Dhulipala et al. "MUVERA: Multi-Vector Retrieval via Fixed Dimensional Encodings" (NeurIPS 2024)
 - Weaviate. "An Overview of Late Interaction Retrieval Models" (2025)
+- Milvus. "v3.0.0 release notes" (GitHub, July 2026)
+- GLIE, arXiv 2609.11808: compressing visual-document multi-vector embeddings (September 2026)
 - ECIR 2026. "Late Interaction Workshop" (2026)
 
 ---
 
-*Previous: [Contextual Retrieval](10-contextual-retrieval.md)*
+*Previous: [Contextual Retrieval](10-contextual-retrieval.md) | Next: [Multi-Modal RAG](12-multimodal-rag.md)*

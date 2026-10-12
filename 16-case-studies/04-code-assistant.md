@@ -214,39 +214,47 @@ flowchart TD
 
 ## Code Generation Pipeline
 
-### Completion Service (Dec 2025)
+### Completion Service
+
+Reasoning models are the wrong tool for keystroke-level completions: thinking tokens alone blow a 200ms budget. Inline completion runs on a small fill-in-the-middle (FIM) model that you host, which also satisfies the "no code leaves customer infrastructure" option.
 
 ```python
-class DeepCompletion:
+class InlineCompletion:
     """
-    Sub-150ms latency using o4-mini with speculative decoding.
+    Sub-200ms FIM completions from a small self-hosted model inside the
+    customer VPC. Served by vLLM (pin >= 0.30.0) with speculative decoding
+    set at server start, e.g.
+    vllm serve <checkpoint> --speculative-config '{"method": "eagle3", ...}'
     """
-    def __init__(self):
-        self.model = "o4-mini"  # Native code-optimized mini
-        self.draft_model = "nano-code-1b" # Local on-device model
-    
-    async def complete(self, context: str) -> str:
-        # Speculative decoding: 1B model drafts, o4-mini verifies
-        return await self.openai.generate(
+    def __init__(self, client):
+        self.client = client   # OpenAI-compatible client for the in-VPC server
+        self.model = "fim-8b"  # your FIM-tuned checkpoint of an Apache 2.0 base
+
+    async def complete(self, prefix: str, suffix: str) -> str:
+        resp = await self.client.completions.create(
             model=self.model,
-            draft_model=self.draft_model,
-            prompt=context,
-            max_tokens=64
+            prompt=self.build_fim_prompt(prefix, suffix),  # sentinel tokens are model-specific
+            max_tokens=64,
+            temperature=0.0,
+            stop=["\n\n"],
         )
+        return resp.choices[0].text
 ```
 
-### Generation Service (The 'Claude Code' Era)
+**Base model and license.** Candidates are small permissively licensed models such as IBM Granite 4.2 (3B and 8B dense, Apache 2.0), or Qwen3.8-27B (Apache 2.0) if the latency budget allows. Read the license before the benchmark: Qwen3.8-Flash-Next ships under Qwen Community License 1.0, which requires a separate license for any coding-assistant business regardless of revenue, and that is exactly this product. On the serving side, speculative decoding has moved past Medusa: vLLM supports EAGLE-3, MTP, draft-model and DFlash methods, and Inco AI reports 2.7x to 3.4x speedups for DFlash 2 on Qwen3.8-27B (vendor-reported).
+
+### Generation Service (Agentic Refactors)
 
 ```python
 class AgenticGeneration:
     """
-    Using Claude Sonnet 4.6 (Hybrid) for autonomous refactoring.
+    Claude Sonnet 5.5 for multi-file refactors, run as a tool-using agent.
     """
     async def refactor_module(self, folder_path: str):
-        # Claude Sonnet 4.6 with 'Thinking' enabled for architecture consistency
-        agent = ClaudeCodeAgent(
-            model="claude-3-7-sonnet",
-            tools=["ls", "read_file", "write_file", "test_runner"]
+        agent = CodingAgent(
+            model="claude-sonnet-5-5",
+            effort="medium",  # start here and sweep; thinking: disabled returns 400
+            tools=["ls", "read_file", "write_file", "test_runner"],
         )
         
         # Agent explores codebase, understands dependencies, and applies fix
@@ -254,7 +262,15 @@ class AgenticGeneration:
 ```
 
 > [!TIP]
-> **Production Choice:** While Claude Opus 4.7 is a coding beast, **Claude Sonnet 4.6** is the preferred production choice in Dec 2025 for IDEs due to its **Hybrid Reasoning**: developers can toggle "Thinking" for hard bugs and "Fast" for boilerplate.
+> **Production choice (October 2026).** Claude Sonnet 5.5 ($2 / $10) is the default for in-IDE agentic work. On Terminal-Bench 4.0, Anthropic reports 70.6% for Sonnet 5.5 and 66.4% for Opus 5.5 (xhigh effort); both are vendor-reported, and neither model appears on the tbench.ai leaderboard, whose September 21, 2026 update tops out at 58.18% (GPT-6 Astra, max effort). The 2025 "toggle thinking" pattern does not carry over: `thinking: {type: "disabled"}` returns 400 on Sonnet 5.5, so effort is the dial, with `between_tools` as the lowest thinking setting. Price capability per task, not per token: on DeepSWE v1.1, GPT-6 Astra (xhigh), Gemini 3.8 Flash (high) and Claude Opus 5 (max) tie at 74% pass@1, at $4.43, $2.36 and $11.84 per task.
+
+### Model Provider Strategy
+
+Enterprise buyers now ask who owns the model behind the assistant, and model suppliers ask who owns the assistant. Cursor announced it had become part of SpaceX on August 14, 2026 (a deal reported at about $60 billion in stock), and Grok model launches now appear on Cursor's blog. Two weeks later, on August 28, OpenAI told SpaceX it would wind down its contract supplying OpenAI models to Cursor, with a proposed shutoff of November 12, 2026, and that it would not provide future models to Cursor before then, which rules out GPT-6 Astra (shipped September 3; OpenAI named Astra in the notice). A change of ownership is set to take a frontier model family out of a leading coding product on about 11 weeks' notice. That makes **model neutrality a product requirement** in both directions:
+
+- Route every model call through a gateway with per-tenant model allowlists, so an enterprise can exclude a provider without a code change, and losing a provider is a routing change rather than a rewrite. Keep the eval suite runnable against at least two model families so a forced swap starts from measured quality. The same gateway serves the code-stays-in-VPC tenants: it sends their generation and refactor traffic to models in the tenant's own Bedrock, Google Cloud or Foundry account, or to a self-hosted open-weight model, never to a vendor's public endpoint.
+- Track each provider's data-use and retention terms per tenant. Discounted endpoints that let the vendor use your traffic (Meta's Muse Spark 1.3 contributor tier at $0.10 / $0.20, for example) must be opt-in.
+- Expect assurance questions beyond SOC 2. AIUC-1 is one emerging answer: an agent-specific security, safety and reliability certification, audited with adversarial testing and kept only through at least quarterly testing plus an annual audit (Cursor announced its certification on August 13, 2026).
 
 ---
 
@@ -464,17 +480,16 @@ class CompletionCache:
 | Security (0 high severity) | 100% | 99.8% |
 | Acceptance rate | > 30% | 34% |
 
-### Cost Analysis (Dec 2025)
+### Cost Analysis (October 2026)
 
-| Component | Cost per 1M suggestions | Notes |
-|-----------|------------------------|-------|
-| **Completion (o4-mini)** | $0.20 | Extremely optimized for volume |
-| **Agentic Task (Claude Sonnet 4.6)** | $45.00 | Assuming 10k tokens + Thinking |
-| **Verification (Local)** | $0.00 | Shifted to on-device Nano |
-| **Infrastructure** | $15.00 | Managed GPU serving |
-| **Total (Blended)** | **~$12.00** | **90% reduction vs 2024** |
+| Request type | Assumption | Cost per 1M requests | Notes |
+|--------------|------------|----------------------|-------|
+| **Inline completion, self-hosted 8B model** | ~2K in / 30 out; ~15 completions/s per H100 within the 200ms SLO | ~$50 | H100 at $2.77 per GPU-hour (Silicon Data index, October 1, 2026). Measure your own throughput; prefix caching across keystrokes raises it |
+| **Inline completion via API (GPT-6 Luna)** | Same tokens at $0.10 / $0.50 per 1M | ~$215 | Overflow path when the self-hosted pool saturates; not available to code-stays-in-VPC tenants |
+| **Multi-line generation (Claude Sonnet 5.5)** | 8K in / 500 out, up-front thinking off (`between_tools`) to hold the 3s budget | ~$21,000 | $0.021 per request; letting it think ~1K tokens adds about $0.01 and seconds of latency |
+| **Agentic refactor (Claude Sonnet 5.5)** | ~750K in at 90% cache hits, ~6K out | ~$390,000 | $0.39 per task; derivation in the [Autonomous Coding Agent cost breakdown](07-autonomous-coding-agent.md#cost-breakdown) |
 
-*Blended cost assumes 98% completions, 2% high-value agentic refactors.*
+*Blended (98% completions, 2% agentic refactors): about $7,850 per 1M requests, and over 99% of it is the agentic tasks. The completion fleet is a rounding error; the agent's prompt-cache hit rate is the budget. At a 50% hit rate the same refactor costs about $1.08, nearly three times as much.*
 
 ---
 
@@ -487,6 +502,7 @@ class CompletionCache:
 1. **Clarify requirements** (1 min)
    - "What's the target latency for completions vs generations?"
    - "Enterprise deployment with on-prem option?"
+   - "Do enterprise customers exclude any model providers or require specific data-use terms?"
    - "What languages need support?"
 
 2. **Identify the key challenge** (1 min)
@@ -518,7 +534,9 @@ class CompletionCache:
 
 - GitHub Copilot Architecture: https://github.blog/
 - Codestral: https://mistral.ai/news/codestral/
-- CodeLlama: https://ai.meta.com/blog/code-llama/
+- CodeLlama: https://ai.meta.com/blog/code-llama-large-language-model-coding/
+- OpenAI, "Our decision on Cursor following its acquisition by SpaceX" (August 28, 2026): https://openai.com/index/our-decision-on-cursor-following-its-acquisition-by-spacex
+- Cursor, "Cursor is now a part of SpaceX" (August 14, 2026): https://cursor.com/blog/joining-spacex
 
 ---
 

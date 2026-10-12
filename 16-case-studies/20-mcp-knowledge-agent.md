@@ -1,20 +1,20 @@
 # Case Study: Enterprise MCP Knowledge Agent
 
-A 9,000-person enterprise builds a knowledge agent that answers cross-system questions from Snowflake, Confluence, Jira, and Slack via MCP, with OAuth Resource Server semantics, sandboxed STDIO servers, and a defense-in-depth stack against the May 2026 STDIO CVE.
+A 9,000-person enterprise builds a knowledge agent that answers cross-system questions from Snowflake, Confluence, Jira, and Slack via MCP, with OAuth Resource Server semantics, a sandbox for its remaining STDIO servers, and a defense-in-depth stack shaped by the 2026 MCP advisory wave.
 
 ## The Business Problem
 
 A 9,000-person enterprise has 14 internal data systems and a chronic information-retrieval problem. The internal data team estimates engineers spend 6 to 9 hours per week looking up answers that exist somewhere in the system. The CTO sponsors a project to build a knowledge agent that can answer questions like "What did the platform team decide about the Postgres upgrade?" by pulling from Snowflake (metrics), Confluence (RFCs), Jira (tickets), and Slack (threads).
 
-Constraints from the May 2026 reality:
+Constraints:
 
 - 9,000 employees, but tens of thousands of role and group permissions
 - Source-of-truth identity is Okta plus a homegrown role-mapping service
 - Auditor signoff required quarterly; every retrieval logged with identity
-- The May 2026 STDIO CVE ([CVE-2026-NNNNN](https://nvd.nist.gov/) writeups) demonstrated that naive STDIO MCP servers can be coerced via filesystem race conditions on shared-tenant hosts. The security team requires either HTTP-based MCP or a sandboxed STDIO deployment.
+- The 2026 MCP advisory record sets the security bar. A stdio launch path that allowlisted only the executable name could be talked into running shell commands (Chainlit, CVE-2026-45018); a local HTTP server without auth was reachable through DNS rebinding (mysql_mcp_server, CVE-2026-59971, CVSS 10.0); and the widely used community Jira and Confluence server took 25 advisories in one day (mcp-atlassian, September 22, 2026, fixed in 0.22.0), including a token verifier that accepted any non-empty string. The security team requires HTTP-based MCP with real token validation, or a sandboxed STDIO deployment with an argument-level launch allowlist.
 - Tool-result outputs from external systems can carry prompt-injection payloads; treat every result as untrusted by default
 
-The team picks MCP ([spec 2026-03 docs](https://modelcontextprotocol.io/specification/2026-03-26/)) because it standardizes the tool boundary, it has first-class support in Claude, GPT, and Gemini, and the enterprise team has already built an MCP server registry. The security architecture follows the OAuth 2.1 Resource Server pattern with audience binding per [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707.html), the pattern Adversa AI walks through in their [2026 MCP security roundup](https://adversa.ai/blog/mcp-security).
+The team picks MCP ([spec revision 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/)) because it standardizes the tool boundary, it has first-class support in Claude, GPT, and Gemini, and the enterprise team has already built an MCP server registry. The security architecture follows the OAuth 2.1 Resource Server pattern with audience binding per [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707.html), the pattern Adversa AI walks through in their [2026 MCP security roundup](https://adversa.ai/blog/mcp-security).
 
 ## Architecture
 
@@ -27,13 +27,15 @@ flowchart TB
     subgraph Filters["Pre-Tool Filters"]
         AGENT --> ARG[Tool Argument Filter]
         ARG --> ROUTE[Per-Tenant MCP Router]
+        ROUTE --> BROKER[Credential Broker]
     end
 
     subgraph MCP["MCP Server Pool"]
-        ROUTE --> SNOW[Snowflake MCP HTTP]
-        ROUTE --> CONF[Confluence MCP HTTP]
-        ROUTE --> JIRA[Jira MCP HTTP]
-        ROUTE --> SLACK[Slack MCP STDIO sandboxed]
+        BROKER --> SNOW[Snowflake MCP HTTP]
+        BROKER --> CONF[Confluence MCP HTTP]
+        BROKER --> JIRA[Jira MCP HTTP]
+        BROKER --> SLACK[Slack remote MCP HTTP]
+        BROKER --> LEGACY[Legacy internal tools STDIO sandboxed]
     end
 
     subgraph PostFilters["Post-Tool Filters"]
@@ -41,6 +43,7 @@ flowchart TB
         CONF --> VAL
         JIRA --> VAL
         SLACK --> VAL
+        LEGACY --> VAL
         VAL --> TRUST[Trust-Tag Untrusted Content]
     end
 
@@ -54,20 +57,21 @@ flowchart TB
 | Layer | Tech | Purpose |
 |-------|------|---------|
 | Identity | Okta plus role-mapping service | Per-user identity for every call |
-| Gateway | Internal Envoy with OPA policy | Enforce auth and rate limits |
-| Agent runtime | Claude Sonnet 4.7 with structured tools | Multi-step reasoning |
-| MCP transport | HTTP for Snowflake, Confluence, Jira; sandboxed STDIO for Slack legacy | Per-server choice |
-| OAuth Resource Server | Each MCP server is an RS with audience binding | RFC 8707 |
+| Gateway | Internal Envoy with OPA policy | Enforce auth, per-tool policy, and rate limits |
+| Agent runtime | Claude Sonnet 5.5 with strict tool schemas | Multi-step reasoning; no forced `tool_choice`, which the newest Claude models reject |
+| MCP transport | HTTP for Snowflake, Confluence, Jira, and Slack (Slack's official remote server); sandboxed STDIO only for legacy internal tools | Per-server choice |
+| OAuth Resource Server | Each first-party MCP server is an RS with audience binding | RFC 8707 |
+| Credential broker | Vault holding per-user third-party tokens (Slack), each bound to its issuer | OAuth mix-up defense |
 | Trust-tagging | Lightweight classifier on outputs | IPI defense |
 | Audit store | Splunk plus S3 with object-lock | 7-year retention |
 
 ### Data flow
 
 1. Employee asks the agent a question in the internal IDE plugin.
-2. The gateway mints a per-call agent-card JWT, audience-bound to whatever MCP servers the agent will call, scoped only for that user's allowed scopes.
+2. For first-party servers (the Snowflake, Confluence, and Jira MCP servers the enterprise hosts itself and points at its own Okta-backed authorization server), the gateway mints a per-call access token (a JWT), audience-bound to the MCP server the agent will call and scoped only to that user's allowed scopes. For Slack, the credential broker attaches the user's Slack-issued token instead, because an MCP server must accept only tokens issued by its own authorization server.
 3. The agent plans tool calls and emits structured calls.
 4. The tool-argument filter inspects each call before it leaves the gateway: scopes are validated, arguments are syntactically validated, and obvious injection patterns are blocked.
-5. Each MCP server is an OAuth 2.1 Resource Server; it validates the audience claim and the scope, and executes the call only on data the user is allowed to see.
+5. Each MCP server is an OAuth 2.1 Resource Server; it validates the token's signature, issuer, audience, and scope, and executes the call only on data the user is allowed to see.
 6. Tool results return; the output validator inspects them, applies the trust-tag classifier, and rewrites the result to mark untrusted regions.
 7. The agent receives the trust-tagged result and continues reasoning with capability gating: actions that change state cannot be triggered by content from `trust=low` outputs.
 8. Final response is delivered; the full trace is logged with identity, tools called, and trust tags applied.
@@ -76,11 +80,11 @@ flowchart TB
 
 ### 1. Per-tenant scoping with audience binding (RFC 8707)
 
-Each MCP server validates that the token's `aud` claim matches the server's own resource indicator. The token issuer (Okta plus our role-mapping service) signs the JWT with claims `aud=mcp://snowflake.internal`, `scope=read:metrics`, and the per-user identity claims. A token issued for Snowflake cannot be replayed against Confluence; the audience check fails server-side. This is the pattern documented in the [MCP spec 2026-03 authorization section](https://modelcontextprotocol.io/specification/2026-03-26/authorization). Without audience binding, a compromised MCP server can replay tokens to siblings, which Adversa AI demonstrated in their security roundup.
+Each first-party MCP server validates that the token's `aud` claim matches the server's own canonical URI. The token issuer (Okta plus our role-mapping service) signs the JWT with claims `aud=https://snowflake-mcp.internal.example.com`, `scope=read:metrics`, and the per-user identity claims. A token issued for Snowflake cannot be replayed against Confluence; the audience check fails server-side. This is the pattern required by the [MCP authorization spec (revision 2026-07-28)](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization), which also has clients validate the authorization server's RFC 9207 `iss` parameter. Without audience binding, a compromised MCP server can replay tokens to siblings, which Adversa AI demonstrated in their security roundup.
 
-### 2. HTTP-based MCP for new servers; sandboxed STDIO for legacy
+### 2. HTTP-based MCP by default; sandboxed STDIO only for legacy internal tools
 
-The May 2026 STDIO CVE showed that STDIO MCP servers running on shared infrastructure can be coerced by filesystem race conditions on the tmp-file conventions used for IPC. The MCP spec working group has been moving the ecosystem to HTTP-based MCP since late 2025 ([discussion](https://github.com/modelcontextprotocol/specification/discussions)), but legacy servers are slow to migrate. For Slack, the official MCP server is still STDIO-only as of May 2026. We sandbox it: each STDIO MCP server runs in a dedicated container with no shared filesystem, no network access except to the upstream Slack API, and a minimal user namespace. The IPC happens through a per-call unix-domain socket scoped to that container only. This neutralizes the STDIO CVE while we wait for the HTTP migration.
+HTTP gives an explicit trust boundary (the network) and real OAuth enforcement, but only if the server checks tokens properly and nothing local is reachable through DNS rebinding, so every HTTP server binds to loopback or a private network, requires auth, and validates `Origin` and `Host`. A handful of legacy internal tools still ship as STDIO servers. Each runs in a dedicated container with no shared filesystem, no network access except to its own upstream API, a minimal user namespace, and a launch allowlist that pins the full command and arguments (the Chainlit bug was an allowlist that checked only the executable, so `npx -y -c <payload>` passed). IPC happens through a per-call unix-domain socket scoped to that container only. Containers also get an egress policy, not just isolation: in ToolHive (CVE-2026-58197) containerized MCP servers could reach host services through `host.docker.internal`.
 
 ### 3. Tool-argument content filter
 
@@ -105,17 +109,21 @@ A single user might burst because they pasted a long prompt; that should not blo
 
 Every tool call logs: user identity, tool name, arguments (hashed for PII), result hash, timestamp, trust tags applied, and a chain pointer to the previous log entry (SHA-256 chain for tamper detection). Logs go to Splunk for ops and S3 with object-lock for legal retention (7 years). The auditor runs quarterly samples; we automate the sample selection. This is the same audit pattern that SOC 2 Type II requires for system-of-record applications.
 
-### 7. Slack MCP migration plan
+### 7. Slack: official remote server, third-party auth
 
-The Slack MCP server is STDIO-only today. We track the upstream migration to HTTP; we maintain a wrapper that translates HTTP MCP calls into the legacy STDIO server until the official HTTP server ships. Estimated migration: Q4 2026. The wrapper is a thin Go process that handles HTTP, validates audience, and proxies to the sandboxed STDIO server.
+The team first wrapped a STDIO Slack server in the sandbox above. Slack now runs an official remote MCP server (`https://mcp.slack.com/mcp`) over Streamable HTTP only (no SSE, no Dynamic Client Registration), with confidential OAuth 2.0 and per-tool scopes for a registered Slack app. Moving to it retired the wrapper but changed the auth topology. Slack's server accepts only Slack-issued tokens, so the gateway cannot mint audience-bound JWTs for it. Instead the credential broker holds each user's Slack token in a vault the agent never sees, records the issuer on every stored credential, and attaches the token only to calls routed to Slack. That is the defense against the OAuth mix-up the official MCP SDKs patched in September 2026 (CVE-2026-104850 in TypeScript, GHSA-qx49-fqc8-xw99 in Python), where a malicious server could name its own authorization server and collect stored refresh tokens and client secrets. See [Tool Use and MCP](../07-agentic-systems/03-tool-use-and-mcp.md#oauth-mix-up-the-multi-server-client-is-the-confused-deputy).
 
 ### 8. Per-MCP-server scoping
 
-Each MCP server has its own resource indicator and its own scope vocabulary. Snowflake exposes scopes like `read:metrics`, `read:logs`; Confluence exposes `read:space/{space_id}`. The agent at planning time figures out the minimum scope it needs and the gateway includes only those scopes in the JWT. This is the principle of least privilege applied at the call layer. The scope-issue logic is tested with adversarial planning prompts (e.g., a user asks an innocent question but the planner is induced into requesting `write:*` on Confluence) and we reject any plan that requests broader scopes than the policy allows.
+Each MCP server has its own resource indicator and its own scope vocabulary. Snowflake exposes scopes like `read:metrics`, `read:logs`; Confluence exposes `read:space/{space_id}`. The agent at planning time figures out the minimum scope it needs and the gateway includes only those scopes in the JWT. This is the principle of least privilege applied at the call layer. Write-capable tools additionally demand step-up scopes at call time (HTTP 403 `insufficient_scope` with the required scope in `WWW-Authenticate`), which the TypeScript server SDK 2.1.0 supports per tool. The scope-issue logic is tested with adversarial planning prompts (e.g., a user asks an innocent question but the planner is induced into requesting `write:*` on Confluence) and we reject any plan that requests broader scopes than the policy allows.
 
 ### 9. Why we did not build this on a single vector index
 
 The naive alternative is to crawl all four systems into a single vector index and run RAG. We rejected this for three reasons: it breaks the access-control story (the index has to encode each user's permissions per document, which is brittle); it bakes in stale data because the crawl runs on a delay; and it loses provenance because the retrieved passage no longer carries the system-level metadata that auditors care about. MCP keeps the source of truth in the source system and lets us query live, with per-call permission checks.
+
+### 10. Use the stateless revision's routing headers at the gateway
+
+The 2026-07-28 revision makes `Mcp-Method` and `Mcp-Name` headers mandatory on Streamable HTTP POSTs, so the Envoy plus OPA gateway can enforce per-tool policy (which roles may call `jira.create_issue`) without parsing JSON-RPC bodies. Stateless servers also mean any pod can serve any request behind a plain load balancer. Where a server needs cross-call state, it mints a random handle bound server-side to the authenticated user (`<user_id>:<handle>`) and never treats possession of a handle as proof of identity, which closes the state-handle hijacking hole the revised security guidance names.
 
 ## Sample Query Sequence
 
@@ -134,7 +142,7 @@ sequenceDiagram
     G->>A: Pass to agent runtime
     A->>AF: Tool call: snowflake.run_query
     AF->>S: Forward if valid
-    S->>S: Validate audience and scope
+    S->>S: Validate signature, issuer, audience, scope
     S-->>V: Return result
     V->>V: Trust-tag and sanitize
     V-->>A: Trust-tagged result
@@ -150,15 +158,15 @@ sequenceDiagram
 
 ### F1: Token replay across MCP servers
 
-A compromised Confluence MCP server tries to call Snowflake using the same token. Mitigation: audience binding (RFC 8707) makes the call fail at Snowflake's resource-server check. We also rotate JWT signing keys every 12 hours and never issue tokens with audience wildcards.
+A compromised Confluence MCP server tries to call Snowflake using the same token. Mitigation: audience binding (RFC 8707) makes the call fail at Snowflake's resource-server check. We also rotate JWT signing keys every 12 hours and never issue tokens with audience wildcards. For the highest-value servers we are piloting DPoP sender-constrained tokens (RFC 9449, now in the MCP TypeScript client 2.1.0 ahead of the spec), so a stolen token is useless without its key.
 
 ### F2: IPI via Confluence page or Slack thread
 
 A user-readable Confluence page contains injected instructions. The agent obeys them and tries to call a write tool. Mitigation: output trust-tagging plus capability gating (Key Design Decision 4). We tested this with 800 red-team payloads pre-launch; the gating blocked 100 percent of high-risk attempted actions in our test set. We continue to red-team monthly.
 
-### F3: STDIO MCP server compromised via filesystem race
+### F3: STDIO launch-path injection
 
-The May 2026 STDIO CVE pattern. Mitigation: per-container sandboxing with no shared filesystem; UDS-based IPC scoped per call; no privileged operations available in the container. We are also tracking the HTTP migration calendar and will retire the wrapper when Slack ships official HTTP.
+A legacy STDIO server's launcher is coerced into running a different command, the Chainlit pattern (CVE-2026-45018) where an executable-name allowlist let `npx -y -c <payload>` through. Mitigation: per-container sandboxing with no shared filesystem; a launch allowlist that pins full command lines, not binary names; UDS-based IPC scoped per call; no privileged operations available in the container. Every remaining STDIO server has a migration ticket to HTTP.
 
 ### F4: Permission escalation through aggregation
 
@@ -166,19 +174,27 @@ A user is allowed to read each of three documents individually but the combined 
 
 ### F5: Audit log gap during pod restart
 
-A pod terminates mid-call; the log entry is missed; the chain hash is broken. Mitigation: every tool call is acknowledged by the log sink before the result is returned to the agent; if the sink does not ACK in 200 ms, the tool call fails open with an explicit "audit unavailable" error. Operational SLO: under 1 audit gap per quarter.
+A pod terminates mid-call; the log entry is missed; the chain hash is broken. Mitigation: every tool call is acknowledged by the log sink before the result is returned to the agent; if the sink does not ACK in 200 ms, the tool call fails closed with an explicit "audit unavailable" error. Operational SLO: under 1 audit gap per quarter.
 
 ### F6: Rate-limit bypass via tool composition
 
 An agent decomposes a single user prompt into 40 tool calls; the per-call rate limit lets each through but the aggregate is expensive. Mitigation: per-turn tool-call cap (12 by default, raisable with approval); a per-prompt cost budget; spend metering that pages SRE when a single prompt exceeds $1.50.
 
-### F7: MCP server upgrade incompatibility
+### F7: MCP server or SDK upgrade incompatibility
 
-An upstream MCP server upgrades its schema; the agent's planning step uses the new schema; legacy MCP-client wrappers in production break. Mitigation: schema-pinning per agent version; explicit MCP-server version compatibility tests in CI; staged rollout of new MCP-server versions.
+An upstream MCP server upgrades its schema; the agent's planning step uses the new schema; legacy MCP-client wrappers in production break. The protocol itself is mid-migration: 2025-11-25 stateful clients and 2026-07-28 stateless clients coexist, and `pip install mcp` now resolves to the 2.x SDK, where `FastMCP` became `MCPServer`. Mitigation: schema-pinning per agent version; SDK versions pinned explicitly; explicit MCP-server version compatibility tests in CI that exercise both protocol eras; staged rollout of new MCP-server versions.
 
 ### F8: Compromised internal MCP server
 
 An attacker gains access to one of our self-hosted MCP servers and tries to issue tokens for itself. Mitigation: MCP servers do not issue tokens; only the gateway does. Servers only verify tokens. Even a fully compromised server cannot manufacture credentials. Network policy prevents server-to-server lateral movement.
+
+### F9: A vulnerable community server in the pool
+
+The September 22 mcp-atlassian advisories are the template: a token verifier that accepted any non-empty string (CVE-2026-77244, critical) and `upload_attachment` tools that read arbitrary server-local files and exfiltrated them as Jira or Confluence attachments. Mitigation: prefer vendor-maintained server code where it fits the auth model; for any community server in the self-hosted pool, pin it at or above the fixed release and subscribe to its advisories; run contract tests that send malformed, expired, wrong-audience, and wrong-issuer tokens and assert a 401; and do not expose upload or attachment tools to a read-only agent at all, because an attachment tool is an exfiltration channel.
+
+### F10: OAuth mix-up through a third-party server
+
+A malicious or compromised third-party MCP server names its own authorization server and tries to collect stored refresh tokens meant for another service. Mitigation: SDKs at or above the September fixes (TypeScript 1.31.0 or 2.2.0, Python 1.30.0 or 2.2.0); the broker binds each stored credential to its issuer and never sends it elsewhere; credentials stored before the upgrade were re-tagged or wiped and users re-consented.
 
 ## Operational Considerations
 
@@ -190,21 +206,22 @@ An attacker gains access to one of our self-hosted MCP servers and tries to issu
 | IPI red-team monthly pass rate | 100 percent block on high-risk |
 | Audit log integrity | 100 percent chain valid daily |
 | Token-replay attempts blocked | 100 percent |
+| Token-validation contract tests (bad, expired, wrong audience or issuer) | 100 percent rejected, every deploy |
 | Per-user runaway spend incidents | under 1 per quarter |
 | User-perceived answer quality | over 75 percent thumbs-up |
 
 ### Cost model
 
-At 9,000 employees with about 30 percent monthly active, ~2,700 active users, average 22 queries per month:
+At 9,000 employees with about 30 percent monthly active, ~2,700 active users, average 22 queries per month (about 59,400 queries per month):
 
 - Model spend: $7,500 per month
 - Trust-tag classifier: $400 per month
 - Audit storage and querying: $1,200 per month
 - MCP servers (per-tenant containers): $1,800 per month
 - Eval and red-team: $1,500 per month
-- Total: ~$12,400 per month, about $1.40 per query
+- Total: ~$12,400 per month, about $0.21 per query or about $1.40 per employee per month
 
-The estimated time saved at 2 minutes per query equals ~14,000 employee-hours per quarter, far in excess of the cost.
+The estimated time saved at 2 minutes per query equals ~5,900 employee-hours per quarter, far in excess of the cost.
 
 ### On-call playbook
 
@@ -213,6 +230,7 @@ The estimated time saved at 2 minutes per query equals ~14,000 employee-hours pe
 - Rate-limit spike: identify the user; manual review; if legitimate burst, raise the bucket; if anomalous, suspend the agent for that user.
 - MCP server outage: route to backup if available; surface to user with explicit "data source unavailable" rather than degraded answers.
 - Trust-tag classifier degradation: if precision drops below 95 percent on the held-out IPI corpus, freeze the agent's high-risk capabilities until the classifier is retrained.
+- New advisory against a server in the pool: disable the affected tools at the gateway (the `Mcp-Name` header makes this a policy change, not a deploy), patch, re-run the token contract tests, re-enable.
 
 ### Monthly red-team cadence
 
@@ -224,23 +242,28 @@ Auditors come quarterly. The pack we hand them: a sample of audit chain segments
 
 ### Migration plan for STDIO MCP servers
 
-As of May 2026, our migration plan: Snowflake, Confluence, and Jira have shipped official HTTP MCP servers; we use them. Slack ships only STDIO; we run it sandboxed behind the wrapper. Our internal data lake exposes an MCP server we wrote, which we built HTTP-native. We expect Slack's HTTP MCP to ship in Q4 2026; at that point we retire the sandbox wrapper and align all servers on HTTP.
+Snowflake, Confluence, Jira, and Slack all run on HTTP MCP servers now (Slack through its official remote server). What remains on STDIO is a short list of legacy internal tools, sandboxed as described above, each with a migration ticket; new internal servers are built HTTP-native and stateless against the 2026-07-28 revision from day one. The SDK side has its own migration: clients and servers still on the v1 TypeScript or Python SDK needed the September security releases for the OAuth mix-up fix (TypeScript 1.31.0, Python 1.30.0, or the 2.2.0 lines), and the Python releases also added a 4 MiB request-body cap and reclamation of idle stateful sessions.
 
 ## What Strong Interview Candidates Cover
 
 - They name MCP, OAuth 2.1, and RFC 8707 by name and explain why audience binding matters across many servers.
-- They distinguish STDIO from HTTP MCP and articulate why HTTP is the going-forward default after the May 2026 CVE.
+- They distinguish STDIO from HTTP MCP, explain why HTTP is the default, and know HTTP's own failure modes (DNS rebinding on local servers, token checks that test presence instead of validity).
+- They separate first-party servers (gateway-minted, audience-bound tokens) from third-party servers (the vendor's own authorization server, issuer-bound credentials in a broker) and can explain the OAuth mix-up attack.
 - They build defense in depth: tool-argument filter, tool-result trust tagging, capability gating, and audit chain are different layers; they explain why each one matters.
 - They walk through IPI explicitly and reference the CaMeL or similar capability-gating pattern.
-- They size operational cost and define SLOs that include security signals (red-team pass rate, audit integrity), not just latency and uptime.
+- They size operational cost and define SLOs that include security signals (red-team pass rate, audit integrity, token contract tests), not just latency and uptime.
 - They reject the naive single-vector-index alternative and explain the three reasons (access control, staleness, provenance).
 
 ## References
 
-- [Model Context Protocol specification 2026-03-26](https://modelcontextprotocol.io/specification/2026-03-26/)
-- [MCP Authorization section](https://modelcontextprotocol.io/specification/2026-03-26/authorization)
+- [Model Context Protocol specification, revision 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/)
+- [MCP Authorization (revision 2026-07-28)](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization)
 - IETF, [RFC 8707: Resource Indicators for OAuth 2.0](https://www.rfc-editor.org/rfc/rfc8707.html)
 - IETF, [OAuth 2.1 draft](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1)
+- MCP TypeScript SDK, [OAuth authorization-server mix-up advisory (GHSA-6qxp-vccf-f47h)](https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-6qxp-vccf-f47h)
+- MCP Python SDK, [OAuth mix-up advisory (GHSA-qx49-fqc8-xw99)](https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-qx49-fqc8-xw99)
+- [GitHub Advisory Database: reviewed MCP advisories](https://github.com/advisories?query=type%3Areviewed+mcp)
+- Slack, [MCP server documentation](https://docs.slack.dev/ai/mcp-server)
 - Adversa AI, [2026 MCP Security Roundup](https://adversa.ai/blog/mcp-security)
 - Google DeepMind, [CaMeL: Defending against indirect prompt injection](https://arxiv.org/abs/2503.18813)
 - Anthropic, [Agent safety best practices](https://docs.anthropic.com/en/docs/agents/safety)
@@ -249,7 +272,6 @@ As of May 2026, our migration plan: Snowflake, Confluence, and Jira have shipped
 - [Splunk SOC 2 logging patterns](https://www.splunk.com/en_us/blog/learn/soc-2-compliance.html)
 - [Open Policy Agent for gateway policy](https://www.openpolicyagent.org/docs/latest/)
 - Embrace the Red, [IPI demonstration blog series](https://embracethered.com/blog/)
-- [Snowflake MCP server reference](https://github.com/modelcontextprotocol/servers)
-- [Atlassian MCP servers](https://github.com/modelcontextprotocol/servers)
+- [MCP reference servers](https://github.com/modelcontextprotocol/servers)
 
 Related chapters: [Tool Use and MCP](../07-agentic-systems/03-tool-use-and-mcp.md), [Security and Access](../12-security-and-access/01-llm-security.md), [Multi-Tenant RAG Isolation](../12-security-and-access/02-access-control.md).

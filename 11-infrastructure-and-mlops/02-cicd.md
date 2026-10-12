@@ -33,9 +33,18 @@ Deploying LLM applications requires adapting traditional CI/CD practices for AI-
 |-------------|------|------------------|
 | Prompt text | Medium | Regression + quality eval |
 | System prompt | High | Full evaluation suite |
-| Model version | High | Comprehensive benchmark |
+| Model version (including forced migrations) | High | Comprehensive benchmark + API contract tests |
 | RAG index | Medium | Retrieval + quality eval |
-| Parameters (temp, etc) | Low-Medium | Quality sampling |
+| Parameters (effort, thinking, max tokens) | Medium | Quality and cost sampling |
+| Provider-side change under the same model ID | Medium-High | Scheduled evals against production model IDs |
+| SDK or framework major version | Medium | Contract tests on the request actually sent |
+| Agent, editor or VCS config in the repo | High | Security review; treat as executable code |
+
+The last four rows are the ones 2026 made non-optional. Agent and VCS config gets its own gate in [Stage 5](#stage-5-supply-chain-and-agent-config-gates); the other three:
+
+- **Sampling parameters are going away.** The Claude API already returns 400 for non-default sampling values on Opus 4.7 and later, and Anthropic's Python SDK 1.0 (August 20, 2026) removed `temperature`, `top_p` and `top_k` from the Messages methods (passing them raises `TypeError`). Google deprecated them in the Gemini API on July 21, and GPT-6 Astra rejects custom temperature, `top_p` and logprobs. "Set temperature to 0 for reproducible CI" no longer works; reasoning effort is the main knob, and its defaults change between versions (Claude Opus 5.5 defaults to `medium`, Opus 5 to `high`). Assert on structured fields and semantic checks, not exact strings.
+- **The model can change under a fixed ID.** OpenAI fixed an image-encoding bug in `gpt-6-sol` and `gpt-6-luna` on September 25, 2026 without changing the IDs, so image evals run before that date no longer describe what those endpoints do. Coding-agent CLIs also swap default models in point releases (Codex CLI moved to GPT-6.1 Sol in rust-v0.159.1; Claude Code moved to Opus 5.5 in 2.1.280). Run the eval suite on a schedule against the exact IDs production uses, not only on your own commits.
+- **SDK majors break test harnesses silently.** The Anthropic SDK 1.0 and OpenAI SDK 3.0 (August 12) moved to `httpx2`. Per Anthropic's migration guide, OpenTelemetry instrumentation, `respx` and `vcrpy` can miss calls unless you call `httpx2.alias_httpx()`, so recorded-response tests may hit the live API or trace nothing while still passing.
 
 ---
 
@@ -236,6 +245,23 @@ class LLMEvaluationStage:
         )
 ```
 
+Keep the eval harness portable. Hosted eval products churn like everything else: OpenAI Evals becomes read-only on October 31, 2026 and shuts down on November 30, with OpenAI pointing users to Promptfoo (MIT-licensed; it agreed in March to be acquired by OpenAI). Store datasets, graders and thresholds in your repo in a tool-neutral format so the gate survives a vendor change. For a worked example of the full gate, see the [eval-gated CI/CD case study](../16-case-studies/18-eval-gated-cicd.md).
+
+### Stage 5: Supply-Chain and Agent-Config Gates
+
+AI repositories now carry executable configuration that ordinary code review skims past, and attackers target it deliberately:
+
+| Surface | 2026 incident | Gate |
+|---------|---------------|------|
+| Agent and editor auto-run config (`.claude/settings.json` hooks, `.vscode/tasks.json` folder-open tasks) | Mini Shai-Hulud used these hooks by April 30; the ChainDrop npm worm (August 4) reused them across 444 packages and 2,212 versions (StepSecurity) and harvested OpenAI, Anthropic, Cursor, Codex and Gemini tokens | CODEOWNERS review on these paths; fail CI when a new hook or auto-run task appears |
+| Repository `.git/config` (`core.fsmonitor`, `core.hooksPath`, filters) | GitSpawn (Manifold, September 2): seven CLI coding agents ran attacker commands outside their sandboxes on background git calls | Run agent-initiated git with `-c core.fsmonitor=false`; never trust a `.git` directory that arrived outside a clone |
+| SHA-pinned agent plugins | Plugin4Shell (AIR Security, September 17): a branch named like the pinned SHA swapped approved code; fixed in Claude Code 2.1.179 and Codex 0.146.0 | Verify the checked-out tree matches the pin after checkout |
+| Dependencies with silent upstream fixes | Hacktron (disclosed September 13): in late July, Claude Opus 5 turned a libheif overflow, fixed upstream without a CVE, into a working exploit in about 3 hours; chained with an SSO misconfiguration it gave RCE on OpenAI's community forum | Patch on upstream fixes, not CVE announcements; rebuild base images on a schedule |
+
+The exploit window is now measured in hours. Google moved Chrome from 4-week to 2-week releases on September 8, 2026, citing AI-driven patch volume. The CI implication: dependency and base-image freshness becomes a gate with an SLA, and agent configuration gets the same review as code because it is code.
+
+Decide deliberately who may approve those paths. GitHub let Copilot code-review approvals count toward required reviews in a public preview on September 1, 2026 (off by default), with admins choosing which file paths Copilot may approve. AI review is a useful extra gate, but exclude agent config, CI workflows and dependency manifests from AI approval and keep a human CODEOWNER required there, since those are exactly the files an injected or compromised agent would want to change. The [agentic security chapter](../07-agentic-systems/09-agentic-security-and-sandboxing.md) covers the runtime side.
+
 ---
 
 ## Quality Gates
@@ -355,6 +381,19 @@ class ShadowDeployer:
         return await self.generate_comparison_report(new_version)
 ```
 
+### Model Migrations Are Deploys
+
+Model changes now arrive on the vendor's calendar, not yours. Claude Sonnet 4.5 retires on November 30, 2026 on the Claude API and Foundry (Anthropic points to Sonnet 5.5), OpenAI retires the `gpt-5-2025-08-07` and `o3-2025-04-16` snapshots on December 11, and Bedrock's Claude Sonnet 4 reaches end of life on October 14. Anthropic gives 60 days' notice. OpenAI states 6 months for GA models, 3 for specialized variants and as little as 2 weeks for previews, and it retired `gpt-5.4-cyber` on October 1 after only 20 days, so plan for less than the stated minimum.
+
+The newest models also change the API contract, so a migration can fail on request shape before quality is even measured:
+
+- Claude Fable 5.1, Opus 5.5 and Sonnet 5.5 return 400 on `tool_choice` of `any` or `tool`; use `auto` with strict tools or structured outputs.
+- Opus 5.5 thinking cannot be disabled, and on Sonnet 5.5 `thinking: {"type": "disabled"}` returns 400 (the lowest setting is `between_tools`).
+- Thinking blocks are bound to the model and conversation: blocks another model cannot read are dropped silently, and editing history before a thinking block returns 400 on accounts created on or after August 31, 2026. Replaying a transcript recorded on the old model is not a valid test of the new one.
+- GPT-6 Astra drops temperature, `top_p` and logprobs and needs the Responses API for tools.
+
+Treat a model bump exactly like a code deploy: run the full eval suite on the new ID, contract-test the request your client actually sends, shadow it on production traffic, then canary with the same rollback triggers as any release. Keep the outgoing model as the rollback target until its retirement date, and put that date in the deploy calendar.
+
 ---
 
 ## Rollback Procedures
@@ -439,12 +478,33 @@ The key insight is that LLM outputs are non-deterministic, so testing must be st
 
 The key is fast detection and action. A bad prompt in production for 10 minutes is acceptable. For 10 hours is not."
 
+### Q: Your provider is retiring the model your product runs on in 60 days. How do you migrate safely?
+
+**Strong answer:**
+
+"I treat it as a planned deploy with a hard deadline, in four steps.
+
+**1. Contract first.** Before measuring quality, I check that the request still works. The newest Claude models (Fable 5.1, Opus 5.5, Sonnet 5.5) reject forced `tool_choice`, Sonnet 5.5 rejects `thinking: disabled`, and GPT-6 Astra rejects temperature. I run contract tests on the exact request my client sends and fix the shape (strict tools or structured outputs instead of forced tool calls, effort instead of temperature).
+
+**2. Eval on the new ID.** Full golden set plus sampled LLM-judge evals, with cost and latency recorded, because default effort and thinking behavior differ between versions and change the bill as much as the quality. I do not reuse transcripts generated by the old model as multi-turn fixtures, since newer Claude models drop or reject thinking blocks from other models.
+
+**3. Shadow, then canary.** Shadow real traffic for divergence, then canary with the usual rollback triggers. The old model stays the rollback target until the retirement date.
+
+**4. Fix the process.** Retirement dates go into a registry keyed by model and platform, because the same model retires months apart on different clouds, and scheduled evals run against production model IDs so a silent provider-side change gets caught too.
+
+Sixty days is enough if the pipeline exists. It is not enough if the eval suite has to be built during the migration."
+
 ---
 
 ## References
 
 - ML Ops: https://ml-ops.org/
 - LangSmith: https://docs.smith.langchain.com/
+- Promptfoo: https://www.promptfoo.dev/
+- OpenAI deprecations: https://developers.openai.com/api/docs/deprecations
+- Anthropic model deprecations: https://platform.claude.com/docs/en/about-claude/model-deprecations
+- StepSecurity, ChainDrop npm worm: https://www.stepsecurity.io/blog/chaindrop-npm-worm
+- AIR Security, Plugin4Shell: https://www.air.security/blog-posts/plugin4shell
 
 ---
 

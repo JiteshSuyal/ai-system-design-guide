@@ -4,11 +4,12 @@ Chunking is the process of splitting a document into discrete segments for retri
 
 ## Table of Contents
 
-- [The Retrieval-Context Tension](#tension)
-- [Recursive Structure Splitting](#recursive)
-- [Semantic Chunking](#semantic)
-- [Hierarchical (Parent-Child) Chunking](#hierarchical)
-- [Content-Specific Strategies (Code, PDF, Tables)](#content-specific)
+- [The Retrieval-Context Tension](#the-retrieval-context-tension)
+- [Recursive Structure Splitting](#recursive-structure-splitting)
+- [Semantic Chunking](#semantic-chunking)
+- [Hierarchical (Parent-Child) Chunking](#hierarchical-parent-child-chunking)
+- [Late Chunking and Contextualized Chunk Embeddings](#late-chunking-and-contextualized-chunk-embeddings)
+- [Content-Specific Strategies (Code, PDF, Tables)](#content-specific-strategies)
 - [Interview Questions](#interview-questions)
 - [References](#references)
 
@@ -44,7 +45,7 @@ Semantic chunking uses an embedding model to detect "topic shifts."
 2. Group sentences as long as their embedding similarity stays above a threshold (e.g., 0.82).
 3. If similarity drops, start a new chunk.
 
-**Nuance**: Production pipelines increasingly use **Cross-Encoder Segmenters**. A tiny model scans the text and predicts a "Separator token" at every semantic break. This is 10x more accurate than cosine-similarity thresholding.
+**Nuance**: Some pipelines replace the threshold with a **learned segmenter**: a small model scans the text and predicts a separator at every semantic break. It avoids hand-tuning a cosine cutoff per corpus, but published chunking benchmarks swing widely between fixed-size, recursive and semantic strategies, so measure recall on your own documents before paying for the extra model.
 
 ---
 
@@ -61,6 +62,17 @@ This is the industry standard for production RAG.
 
 ---
 
+## Late Chunking and Contextualized Chunk Embeddings
+
+Hierarchical chunking fixes context at *read* time. The alternative is to fix it at *embed* time, so each chunk vector already knows which document it came from.
+
+- **Late chunking** (Jina, 2024): run a long-context embedding model over the whole document, then pool token embeddings per chunk span. Every chunk vector is conditioned on the full document, with no extra LLM call.
+- **Contextualized chunk embedding models** package this as an API. **voyage-context-4** (GA June 29, 2026; $0.12 per 1M tokens, 32K window, built-in auto-chunking) returns one document-aware vector per chunk; Voyage reports +2.08% chunk-level and +1.4% document-level retrieval over voyage-context-3 (vendor-reported). Perplexity's **pplx-embed-v2-context-9b-preview** (September 25, 2026) encodes a document's chunks together, but it is explicitly a preview whose vectors must not be mixed with later releases.
+
+The tradeoff against Anthropic-style contextual prefixes: embedder-side context costs no per-chunk LLM call, but it only helps the dense side. BM25 still sees the bare chunk text, so keep header prepending for the sparse index. The full cost comparison is in [Contextual Retrieval](10-contextual-retrieval.md).
+
+---
+
 ## Content-Specific Strategies
 
 ### 1. Code Chunking
@@ -72,8 +84,9 @@ This is the industry standard for production RAG.
 - **Modern pattern**: "Summarized Tables." Store a natural language summary of the table in the vector DB, but return the full Markdown table to the LLM.
 
 ### 3. PDF/Layout Chunking
-- **Strategy**: Use **Vision-Language Model (VLM)** pre-processing (e.g., ColPali).
-- **Nuance**: Instead of just text, store embeddings that represent the *positional layout* of the page, ensuring charts and sidebars don't get mixed into body text.
+- **Strategy A, parse then chunk**: Use a layout-aware parser (Docling, MinerU, Cohere Parse, or an open parsing VLM) that emits reading-order blocks, with tables, figures and sidebars as separate typed elements. Chunk on those block boundaries so charts and sidebars never get mixed into body text.
+- **Strategy B, skip text chunking**: Embed each page image directly with a late-interaction model (ColPali family). Layout survives because the page *is* the unit. See [Multi-Modal RAG](12-multimodal-rag.md).
+- **Agent-facing pattern**: For agentic RAG, consider giving the agent stable block locators instead of pre-cut chunks. MinerU 4.0 (September 16, 2026) returns locators of the form `doc:{id}/tier:{tier}/page:{page}/block:{block}` and reads long documents progressively (the first 10 pages plus a continuation), so the agent navigates the document and citations point at a verifiable block.
 
 ---
 
@@ -87,15 +100,21 @@ Fixed-size chunking is "content-blind." It frequently splits sentences mid-thoug
 ### Q: What is "Contextual Retrieval" (the Anthropic pattern)?
 
 **Strong answer:**
-Contextual Retrieval involves prepending a 1-sentence global context to every chunk before embedding it. For example, if a chunk is about "battery life," but it's from a manual for a "2025 Model X Drone," the text `[Drone_Model_X_Manual]:` is added to the chunk. This ensures that the vector for "battery life" is influenced by the "Drone" context, preventing it from being accidentally retrieved for "phone battery" queries.
+Contextual Retrieval involves prepending a short, LLM-written context to every chunk before embedding and BM25 indexing it. For example, if a chunk is about "battery life," but it's from a manual for a "2025 Model X Drone," a line like `This chunk is from the Model X drone manual, battery section:` is added to the chunk. This ensures that the vector for "battery life" is influenced by the "Drone" context, preventing it from being accidentally retrieved for "phone battery" queries. Anthropic measured a 35% drop in top-20 retrieval failures from contextual embeddings alone, 49% when contextual BM25 is added, and 67% with reranking on top.
+
+The cost is one LLM call per chunk at ingestion (cheap with prompt caching of the source document). The 2026 alternative is a contextualized chunk embedding model such as voyage-context-4, which gets document-aware vectors with no LLM call but does nothing for BM25. My default: header prepending for both indexes, an embedder-side context model for dense, and LLM contextualization only for the document types that still fail on the golden set.
 
 ---
 
 ## References
-- Anthropic. "Contextual Retrieval: Improving RAG Accuracy" (2024)
-- LlamaIndex. "Advanced Chunking Strategies for RAG" (2025)
-- LangChain. "RecursiveCharacterTextSplitter Benchmarks" (2024)
+- [Anthropic. "Introducing Contextual Retrieval" (Sep 2024)](https://www.anthropic.com/news/contextual-retrieval)
+- [Günther et al. "Late Chunking: Contextual Chunk Embeddings Using Long-Context Embedding Models" (2024)](https://arxiv.org/abs/2409.04701)
+- [Voyage AI. "voyage-context-4" (June 2026)](https://blog.voyageai.com/2026/06/29/voyage-context-4/)
+- [MinerU 4.0 release notes (Sep 2026)](https://github.com/opendatalab/MinerU/releases/tag/mineru-4.0.0-released)
+- [Smith and Troynikov. "Evaluating Chunking Strategies for Retrieval" (Chroma, July 2024)](https://www.trychroma.com/research/evaluating-chunking)
+- [LangChain. "Text splitter integrations" (docs)](https://docs.langchain.com/oss/python/integrations/splitters)
+- [LlamaIndex. "Node Parser Modules" (docs, semantic and hierarchical parsers)](https://developers.llamaindex.ai/python/framework/module_guides/loading/node_parsers/modules/)
 
 ---
 
-*Next: [Embedding Models](03-embedding-models.md)*
+*Previous: [RAG Fundamentals](01-rag-fundamentals.md) | Next: [Embedding Models](03-embedding-models.md)*

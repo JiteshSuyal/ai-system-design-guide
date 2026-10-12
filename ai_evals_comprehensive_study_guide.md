@@ -18,7 +18,7 @@
 - How to close the loop: turn eval results into system improvements
 - How to do all of this with your observability platform of choice (Phoenix, Langfuse, Braintrust, LangSmith, or your own)
 
-**Platform Examples:** This guide uses **Arize Phoenix** (open-source, self-hosted) and **Langfuse** (open-source, cloud or self-hosted) as primary examples. The methodology is platform-agnostic — adapt it to whichever tool you use.
+**Platform Examples:** This guide uses **Arize Phoenix** (free and self-hosted, source-available under the Elastic License 2.0) and **Langfuse** (open-source, cloud or self-hosted) as primary examples. The methodology is platform-agnostic: adapt it to whichever tool you use.
 
 ---
 
@@ -65,7 +65,7 @@ There's a debate in the AI community: some people say "just vibe check your app"
 
 **Everyone needs evals.** The people who say they don't need evals are actually benefiting from evals that someone else did upstream.
 
-Example: If you're building a coding assistant with GPT-4, OpenAI already tested GPT-4 on massive code benchmarks. So you can "vibe check" your app. But for most applications that aren't simple uses of foundation models, you need your own evals.
+Example: If you're building a thin coding assistant on a frontier model like GPT-6.1 Sol or Claude Opus 5.5, its lab already ran that model through large coding benchmarks before release. So you can "vibe check" your app. But for most applications that aren't simple uses of foundation models, you need your own evals.
 
 ### The Three Core Truths About Evals
 
@@ -190,7 +190,7 @@ ASSISTANT RESPONSE:
 **Better to include:**
 - System prompts used
 - Tool calls and their results
-- Model parameters (temperature, max_tokens, etc.)
+- Model parameters (reasoning effort, temperature where the model accepts it, max_tokens, etc.)
 - Token counts
 - Latency (response time)
 - Cost per request
@@ -205,7 +205,7 @@ ASSISTANT RESPONSE:
 
 | Tool | Type | Best For | Cost |
 |------|------|----------|------|
-| **Arize Phoenix** | Open source, self-hosted | Full-featured, single Docker container | Free |
+| **Arize Phoenix** | Source-available (ELv2), self-hosted | Full-featured, single Docker container | Free |
 | **Langfuse** | Open source, cloud or self-hosted | Polished UI, strong community | Free tier + paid |
 | **Braintrust** | Cloud | Excellent UI, team collaboration | Paid |
 | **LangSmith** | Cloud | LangChain users | Paid |
@@ -213,9 +213,11 @@ ASSISTANT RESPONSE:
 
 All of these support the same core concepts: traces, spans, datasets, evaluations, and experiments. The methodology in this guide works with any of them.
 
-### Setting Up Phoenix (Open-Source, Self-Hosted)
+**Treat vendor risk as a selection criterion.** Ownership and terms in this category changed repeatedly in 2026. Dynatrace agreed to buy Arize, Phoenix's maintainer, for $915M (announced August 13). Langfuse has been part of ClickHouse since January. OpenAI is shutting down its hosted Evals platform (read-only from October 31, gone November 30) and points users to Promptfoo, which it owns. Since September 14, LangSmith SaaS keeps extended-retention traces for at most 180 days. The defense is the same for all of them: instrument with OpenTelemetry (OpenInference, or Langfuse's OTel-based SDK) so you can repoint traces at a different backend, and copy any trace you rely on as ground truth into a versioned dataset you control.
 
-Phoenix is an open-source AI observability platform built on OpenTelemetry. It provides tracing, evaluation, datasets, experiments, and prompt management — all for free.
+### Setting Up Phoenix (Free, Self-Hosted)
+
+Phoenix is a free, self-hostable AI observability platform built on OpenTelemetry. It is source-available under the Elastic License 2.0, which allows self-hosting but not offering Phoenix to third parties as a hosted or managed service. It provides tracing, evaluation, datasets, experiments, and prompt management at no cost.
 
 #### Install and Start
 
@@ -288,13 +290,13 @@ pip install langfuse openai
 # Set environment variables (or pass to constructor)
 # LANGFUSE_SECRET_KEY="sk-lf-..."
 # LANGFUSE_PUBLIC_KEY="pk-lf-..."
-# LANGFUSE_HOST="https://cloud.langfuse.com"  # or your self-hosted URL
+# LANGFUSE_BASE_URL="https://cloud.langfuse.com"  # or your self-hosted URL (LANGFUSE_HOST is deprecated in SDK v4)
 ```
 
 #### Instrument Your Application (Drop-In Replacement)
 
 ```python
-# Just change your import — everything else stays the same!
+# Just change your import; everything else stays the same!
 from langfuse.openai import OpenAI
 
 client = OpenAI()
@@ -529,23 +531,29 @@ for t in dimension_tuples:
     queries.append(response.choices[0].message.content)
 ```
 
-**With Phoenix (batch generation):**
+**With Phoenix Evals (`arize-phoenix-evals` 3.x, concurrent generation):**
 
 ```python
-from phoenix.evals import OpenAIModel, PromptTemplate, llm_generate
+import asyncio
+from phoenix.evals.llm import LLM
 
-query_template = PromptTemplate("""
-Convert this dimension tuple into a realistic user query for a Recipe Bot:
+# LLM wraps the provider SDK and adds rate limiting
+llm = LLM(provider="openai", model="gpt-4o-mini")
+
+QUERY_TEMPLATE = """Convert this dimension tuple into a realistic user query for a Recipe Bot:
 Dimension tuple: {tuple_description}
-Generate 1 unique, realistic query:
-""")
+Generate 1 unique, realistic query:"""
 
-queries_result = llm_generate(
-    dataframe=query_df,
-    template=query_template,
-    model=OpenAIModel(model="gpt-4o-mini", temperature=0.9)
-)
+queries = await asyncio.gather(*[
+    llm.async_generate_text(
+        prompt=QUERY_TEMPLATE.format(tuple_description=str(t)),
+        temperature=0.9,  # extra kwargs pass through to the provider SDK
+    )
+    for t in dimension_tuples
+])
 ```
+
+Older tutorials use `llm_generate`, `llm_classify` and `OpenAIModel` from `phoenix.evals`. That legacy API was removed in `arize-phoenix-evals` 3.0.0 (April 7, 2026), so those imports fail on a fresh install.
 
 **Example conversions:**
 
@@ -816,7 +824,7 @@ DIETARY RESTRICTION DEFINITIONS:
 - Vegetarian: No meat or fish, but dairy and eggs are allowed
 - Gluten-free: No wheat, barley, rye, or other gluten-containing grains
 - Keto: Very low carb (<20g net carbs), high fat, moderate protein
-[... full definitions — see Appendix C for the full list ...]
+[... full definitions: see Appendix C for the full list ...]
 
 EVALUATION CRITERIA:
 - PASS: Recipe clearly adheres to the dietary preferences
@@ -875,7 +883,7 @@ DIETARY RESTRICTION DEFINITIONS:
 - Dairy-free: No milk, cheese, butter, yogurt, or other dairy products
 - Keto: Very low carb (typically <20g net carbs), high fat
 - Paleo: No grains, legumes, dairy, refined sugar, or processed foods
-[... all 16 definitions — see Appendix C for the full list ...]
+[... all 16 definitions: see Appendix C for the full list ...]
 ```
 
 #### Part 2: Clear Evaluation Criteria
@@ -1066,7 +1074,7 @@ Test Set Performance:
   Accuracy: 84.0%
 ```
 
-Notice the first attempt had a TNR of only 22.2% — meaning when a recipe actually violated dietary restrictions, the judge only caught it 22% of the time! This is dangerous (imagine telling a diabetic a recipe is safe when it isn't). After careful prompt iteration, the judge achieved 100% TNR.
+Notice the first attempt had a TNR of only 22.2%, meaning when a recipe actually violated dietary restrictions, the judge only caught it 22% of the time! This is dangerous (imagine telling a diabetic a recipe is safe when it isn't). After careful prompt iteration, the judge achieved 100% TNR.
 
 ### Target Metrics
 
@@ -1089,8 +1097,8 @@ Notice the first attempt had a TNR of only 22.2% — meaning when a recipe actua
 1. **Test your judge** on Dev set
 2. **Calculate TPR and TNR**
 3. **Look at errors:**
-   - Where did it miss real failures? (False Negatives)
-   - Where did it false alarm? (False Positives)
+   - Where did it miss real failures? (False Positives: judge said PASS, truth is FAIL)
+   - Where did it false alarm? (False Negatives: judge said FAIL, truth is PASS)
 4. **Update the prompt:**
    - Add missed scenarios to criteria
    - Add false alarm scenarios to "NOT a failure" section
@@ -1124,12 +1132,21 @@ Once validated, run your judge on ALL production traces:
 **With Phoenix (batch):**
 
 ```python
-from phoenix.evals import llm_generate, OpenAIModel
+from phoenix.evals import create_classifier, async_evaluate_dataframe
+from phoenix.evals.llm import LLM
 
-results = llm_generate(
-    dataframe=all_traces_df,
-    template=judge_prompt_template,
-    model=OpenAIModel(model="gpt-4o", temperature=0),
+# create_classifier collects the label (with an explanation) through
+# structured output, so drop the "RETURN YOUR EVALUATION IN JSON" lines
+dietary_judge = create_classifier(
+    name="dietary_adherence",
+    prompt_template=judge_prompt_template,  # validated in Steps 4-6
+    llm=LLM(provider="openai", model="gpt-4o"),
+    choices={"PASS": 1.0, "FAIL": 0.0},
+)
+
+results_df = await async_evaluate_dataframe(
+    dataframe=all_traces_df,  # columns named after the template variables
+    evaluators=[dietary_judge],
     concurrency=20,
 )
 ```
@@ -1165,6 +1182,8 @@ def run_judge(trace):
 with ThreadPoolExecutor(max_workers=20) as executor:
     results = list(executor.map(run_judge, all_traces))
 ```
+
+**Pin the judge, not just the prompt.** These examples use `gpt-4o`, and the plain OpenAI version sets `temperature=0`, because that model still accepts sampling parameters. Newer models increasingly do not: the Claude API returns a 400 for non-default `temperature` or `top_p` on Opus 4.7 and later, Anthropic's Python SDK 1.0 (August 20, 2026) removed those parameters from the Messages method signatures (older models still take them through `extra_body`), Google deprecated them in the Gemini API (July 21, 2026), and GPT-6 Astra accepts no custom `temperature`, `top_p` or logprobs. On these models, reproducibility comes from pinning the exact model ID and reasoning effort, logging both with every judge run, and re-measuring TPR/TNR on your test set whenever either changes. Judge models also retire on a schedule. `claude-sonnet-4-5-20250929` leaves the Claude API on November 30, 2026, and Claude Haiku 4.5 leaves Microsoft Foundry on November 15, so a judge validated on either needs re-validation on its replacement before then.
 
 **Example result:** Raw pass rate on 1000 traces = 84.4%
 
@@ -1711,9 +1730,12 @@ The approach is the same regardless of platform: query spans by pipeline state, 
 ```python
 from phoenix.client import AsyncClient
 from phoenix.client.types.spans import SpanQuery
-from phoenix.evals import OpenAIModel, PromptTemplate, llm_generate
+from phoenix.evals import create_classifier, async_evaluate_dataframe
+from phoenix.evals.llm import LLM
+from phoenix.evals.utils import to_annotation_dataframe
 
 px_client = AsyncClient()
+judge_llm = LLM(provider="openai", model="gpt-4o")
 
 STATES = [
     "ParseRequest", "PlanToolCalls", "GenRecipeArgs",
@@ -1725,50 +1747,70 @@ for state_name in STATES:
     spans_df = await px_client.spans.get_spans_dataframe(
         project_identifier="recipe-pipeline", query=query
     )
+    # Map span attributes onto the {input} / {output} template variables
+    spans_df = spans_df.rename(columns={
+        "attributes.input.value": "input",
+        "attributes.output.value": "output",
+    })
 
     with open(f"evaluators/{state_name.lower()}_eval.txt") as f:
-        eval_prompt = f.read()
+        eval_prompt = f.read()  # drop the "Return JSON" line; the classifier handles output format
 
-    results = llm_generate(
-        dataframe=spans_df,
-        template=PromptTemplate(eval_prompt),
-        model=OpenAIModel(model="gpt-4o"),
-        output_parser=parse_label_and_explanation,
+    state_judge = create_classifier(
+        name=f"{state_name}_eval",
+        prompt_template=eval_prompt,
+        llm=judge_llm,
+        choices={"pass": 1.0, "fail": 0.0},
+    )
+    results_df = await async_evaluate_dataframe(
+        dataframe=spans_df, evaluators=[state_judge], concurrency=20
     )
 
-    # Log results back to Phoenix
-    from phoenix.evals.utils import to_annotation_dataframe
+    # Log results back to Phoenix as span annotations
     await px_client.spans.log_span_annotations_dataframe(
-        dataframe=to_annotation_dataframe(results)
+        dataframe=to_annotation_dataframe(dataframe=results_df)
     )
 ```
 
 #### With Langfuse
 
 ```python
-from langfuse import get_client, observe
+from datetime import datetime, timedelta, timezone
+from langfuse import get_client
 
 langfuse = get_client()
+end = datetime.now(timezone.utc)
+start = end - timedelta(days=7)
 
-# Fetch traces and filter by span name
-traces = langfuse.api.trace.list(limit=500, tags=["recipe-pipeline"])
-
-for trace in traces.data:
-    trace_detail = langfuse.api.trace.get(trace.id)
-    for observation in trace_detail.observations:
-        if observation.name in STATES:
-            # Run evaluator
-            result = run_evaluator(observation.name, observation.input, observation.output)
+# Fetch spans by name with the v2 observations API (SDK v4). The v1 trace
+# endpoints behind langfuse.api.trace.list()/get() are deprecated, and
+# Langfuse Cloud serves them only until November 16, 2026.
+for state_name in STATES:
+    cursor = None
+    while True:
+        page = langfuse.api.observations.get_many(
+            name=state_name,
+            from_start_time=start,
+            to_start_time=end,
+            fields="core,basic,io",  # io = input/output, returned as raw strings
+            limit=500,
+            cursor=cursor,
+        )
+        for obs in page.data:
+            result = run_evaluator(state_name, obs.input, obs.output)
 
             # Log score back to Langfuse
             langfuse.create_score(
-                trace_id=trace.id,
-                observation_id=observation.id,
-                name=f"{observation.name}_eval",
+                trace_id=obs.trace_id,
+                observation_id=obs.id,
+                name=f"{state_name}_eval",
                 value=1 if result["label"] == "pass" else 0,
                 data_type="BOOLEAN",
                 comment=result["explanation"],
             )
+        cursor = page.meta.cursor
+        if not cursor:
+            break
 ```
 
 ### Analyzing Failure Distribution
@@ -1842,13 +1884,13 @@ Even without writing code, you can:
 
 ### Why Multi-Turn Is Different
 
-Most eval examples show single-turn Q&A: user asks, AI answers, done. But real applications have **conversations** — and new failure modes emerge across turns:
+Most eval examples show single-turn Q&A: user asks, AI answers, done. But real applications have **conversations**, and new failure modes emerge across turns:
 
-1. **Context loss** — AI forgets what the user said 3 messages ago
-2. **Contradiction** — AI says one thing in turn 2, contradicts it in turn 5
-3. **Instruction drift** — AI gradually stops following the original system prompt
-4. **Repetition** — AI repeats the same information or suggestion
-5. **Escalation failure** — AI doesn't know when to hand off to a human
+1. **Context loss**: AI forgets what the user said 3 messages ago
+2. **Contradiction**: AI says one thing in turn 2, contradicts it in turn 5
+3. **Instruction drift**: AI gradually stops following the original system prompt
+4. **Repetition**: AI repeats the same information or suggestion
+5. **Escalation failure**: AI doesn't know when to hand off to a human
 
 ### Strategies for Multi-Turn Evaluation
 
@@ -1903,7 +1945,7 @@ SCENARIOS = [
     {
         "turns": [
             "I'm looking for a vegan restaurant",
-            "Actually, make that vegetarian — I eat eggs",
+            "Actually, make that vegetarian. I eat eggs",
             "What about that first place you mentioned?"  # Tests context retention
         ],
         "failure_mode": "context_retention"
@@ -1933,7 +1975,7 @@ SCENARIOS = [
 
 ### Offline vs. Online Evals
 
-Everything in Chapters 3-8 is **offline evaluation** — you run evals after the fact on collected traces. But production systems also need **online evaluation**:
+Everything in Chapters 3-8 is **offline evaluation**: you run evals after the fact on collected traces. But production systems also need **online evaluation**:
 
 | | Offline Evals | Online Evals |
 |---|---|---|
@@ -1972,6 +2014,8 @@ def eval_prompt_injection(trace) -> dict:
 
     return {'passed': True, 'reason': 'No injection patterns detected'}
 ```
+
+A keyword list only catches copy-pasted direct attacks. Indirect injection arrives inside retrieved documents, web pages, and tool results, which never pass through `user_message`, so run injection checks on those inputs too and measure the detector against an adversarial test set, not just the patterns you thought of.
 
 #### PII Leakage Detection
 
@@ -2149,7 +2193,7 @@ This is much more credible than "we tested it and it seems to work."
 ---
 
 <a name="chapter-11"></a>
-## Chapter 11: Closing the Loop — From Evals to Improvements
+## Chapter 11: Closing the Loop: From Evals to Improvements
 
 ### The Most Common Failure: Measuring Without Acting
 
@@ -2174,7 +2218,7 @@ When your eval identifies a failure, ask **where** in the pipeline it happened:
 | **System prompt** | Wrong tone, missing capabilities, policy violations | Edit prompt, add examples, add constraints |
 | **Retrieval** | Wrong documents, missing context | Better chunking, reranking, query expansion |
 | **Tool calls** | Wrong tool selected, wrong parameters | Improve tool descriptions, add validation |
-| **Generation** | Hallucination, wrong format, ignores context | Few-shot examples, structured output, temperature tuning |
+| **Generation** | Hallucination, wrong format, ignores context | Few-shot examples, structured output, temperature or reasoning-effort tuning |
 | **Post-processing** | Truncation, encoding issues, format errors | Fix parsing code, add validation |
 
 ### Regression Testing
@@ -2214,12 +2258,14 @@ suite.add_regression_case(
 )
 ```
 
+Run the suite on a schedule too, not only when you change the model string. A model can change under a stable ID: on September 25, 2026, OpenAI fixed an image-understanding bug in GPT-6 Sol and GPT-6 Luna without changing either model ID and told customers with image inputs to rerun their evaluations.
+
 ### Model Comparison with Evals
 
-When evaluating whether to switch models (e.g., GPT-4o vs. Claude vs. Gemini):
+When evaluating whether to switch models (e.g., GPT-6.1 Sol vs. Claude Sonnet 5.5 vs. Gemini 3.8 Flash):
 
 ```python
-MODELS = ["gpt-4o", "claude-sonnet-4-5-20250929", "gemini-2.0-flash"]
+MODELS = ["gpt-6.1-sol", "claude-sonnet-5-5", "gemini-3.8-flash"]
 
 for model in MODELS:
     results = run_eval_suite(model=model, test_set=test_data)
@@ -2227,17 +2273,25 @@ for model in MODELS:
           f"cost=${results['cost']:.2f}, latency={results['latency_p50']:.0f}ms")
 ```
 
+**Run your own suite instead of picking from a leaderboard.** Public numbers depend on harness, effort and metric as much as on the model:
+
+- **Harness:** ARC Prize scored GPT-6 Astra at 62.7% on ARC-AGI-3 with its standard harness (max effort) and 99.9% with a provider harness (high effort) that carries hidden reasoning state between requests (September 2026).
+- **Metric:** On the official OSWorld 2.0 leaderboard, one Claude Opus 5 run (max effort, v2.1 full set) scores 77.67% on partial credit but completes only 44.33% of tasks end to end. Vendor launch posts usually quote the partial number.
+- **Fallback:** Anthropic ran its Claude Opus 5.5 launch benchmarks with production safeguards on. When they intervened, other models (Opus 4.8 or Opus 5) finished the task, so the headline score describes a routed system.
+
+Record the model ID, reasoning effort, harness and fallback state with every comparison, the same way you version the prompt. Set effort explicitly rather than taking defaults: Claude Sonnet 5.5 defaults to `high` on the API, Claude Opus 5.5 and GPT-6.1 Sol default to `medium`, and Gemini 3.8 Flash's `thinking_level` defaults to `medium`, so a comparison at defaults also compares different amounts of thinking.
+
 ### For PMs: The Improvement Playbook
 
 After every eval cycle, create a simple report:
 
 ```
-EVAL REPORT — Week of [date]
+EVAL REPORT: Week of [date]
 
 Top 3 failure modes this week:
-1. [Failure mode] — [X]% of traces — [Root cause] — [Action item]
-2. [Failure mode] — [X]% of traces — [Root cause] — [Action item]
-3. [Failure mode] — [X]% of traces — [Root cause] — [Action item]
+1. [Failure mode] | [X]% of traces | [Root cause] | [Action item]
+2. [Failure mode] | [X]% of traces | [Root cause] | [Action item]
+3. [Failure mode] | [X]% of traces | [Root cause] | [Action item]
 
 Improvements from last week:
 - [Previous fix]: Failure rate went from X% to Y% ✅
@@ -2252,10 +2306,10 @@ Regressions detected: [None / List]
 
 ### When Manual Labels Beat LLM Labels
 
-- **Ambiguous cases** where even experts disagree — you need to capture that disagreement
+- **Ambiguous cases** where even experts disagree; you need to capture that disagreement
 - **High-stakes domains** (medical, legal, financial) where errors have real consequences
 - **New failure modes** that your LLM judge hasn't been trained to detect
-- **Ground truth calibration** — even if you use LLM labeling at scale, validate a sample manually
+- **Ground truth calibration**: even if you use LLM labeling at scale, validate a sample manually
 
 ### Inter-Annotator Agreement
 
@@ -2308,7 +2362,7 @@ PMs and QAs often produce better labels than engineers because:
 
 ### The Cost Problem
 
-Running GPT-4o as a judge on 10,000 traces is expensive. Here's how to manage costs:
+Running a frontier model as a judge on every trace gets expensive fast. Here's how to manage costs:
 
 ### Strategy 1: Use Cheaper Models for Judges
 
@@ -2316,11 +2370,17 @@ Not every eval needs the best model:
 
 | Judge Model | Cost (per 1K traces) | When to Use |
 |---|---|---|
-| GPT-4o / Claude Opus | ~$5-15 | Complex subjective judgments, safety-critical |
-| GPT-4o-mini / Claude Haiku | ~$0.50-1.50 | Clear-cut criteria, well-defined rubrics |
+| Frontier: GPT-6 Astra ($10/$50), Claude Opus 5.5 ($4/$20) | ~$12-30 | Complex subjective judgments, safety-critical, setting the ceiling |
+| Mid: GPT-6.1 Sol, Claude Sonnet 5.5 (both $2/$10) | ~$6 | Most production judges once validated against the ceiling |
+| Small: GPT-6 Luna ($0.10/$0.50), Claude Haiku 4.5 ($1/$5) | ~$0.30-3 | Clear-cut criteria, well-defined rubrics |
+| Decision model: TypeSafe Jev (early access, $0.042 per 1M input) | ~$0.08-0.35 | Binary checklist criteria at high volume; returns a score, no written rationale |
 | Code-based | $0 | Format checks, pattern matching, validation |
 
+Costs assume about 2K input and 200 output tokens per judgment at October 2026 list prices (USD per 1M input/output tokens in parentheses; Jev meters input only). The Jev range runs from list price to the $0.00035 per call LangChain measured in its integration. Reasoning tokens bill as output, so a judge running at high effort can cost several times the figure shown. Set effort explicitly and measure.
+
 **Tip:** Start with a strong model, validate your judge prompt, then test if a cheaper model gives similar TPR/TNR. Often it does.
+
+**Cascades save money, not accuracy.** A cheap judge with an expensive judge as fallback assumes the two make different mistakes. A September 2026 study of rubric judging found otherwise: LLM judges cost 16 to 325x more than Jev, accuracy differed significantly in at most 8 of 27 paired comparisons, about 96% of LLM verdicts repeated Jev's most confident errors, and no cascade beat the best single judge by more than 2.7 points (arXiv 2609.29769). The cheap and expensive judges failed on the same hard cases, so your human-labeled test set remains the only real check on correlated judge error.
 
 ### Strategy 2: Sample Instead of Exhaustive
 
@@ -2346,14 +2406,16 @@ Run cheap evals on everything, expensive evals on a sample:
 # Tier 1: Run on ALL traces (code-based, free)
 tier1_results = [eval_format(t) for t in all_traces]
 
-# Tier 2: Run on traces that passed Tier 1 (cheap LLM, ~$0.50/1K)
+# Tier 2: Run on traces that passed Tier 1 (cheap LLM, ~$0.30/1K)
 tier1_passed = [t for t, r in zip(all_traces, tier1_results) if r['passed']]
-tier2_results = run_llm_eval(tier1_passed, model="gpt-4o-mini")
+tier2_results = run_llm_eval(tier1_passed, model="gpt-6-luna")
 
-# Tier 3: Run on a sample (expensive LLM, ~$5/1K)
+# Tier 3: Run on a sample (mid-tier LLM, ~$6/1K)
 sample = random.sample(tier1_passed, 500)
-tier3_results = run_llm_eval(sample, model="gpt-4o")
+tier3_results = run_llm_eval(sample, model="gpt-6.1-sol")
 ```
+
+Validate each tier's judge against your human labels separately. Don't assume Tier 3 catches what Tier 2 misses: in the cascade study above, the expensive judge mostly repeated the cheap judge's confident errors. Measure how much the two tiers' errors overlap on your own labeled set before relying on escalation.
 
 ### Strategy 4: Cache Duplicate Evaluations
 
@@ -2371,14 +2433,19 @@ def cached_eval(trace, eval_fn):
     return eval_cache[key]
 ```
 
+### Strategy 5: Use Prompt Caching and Batch Pricing
+
+Judge prompts are mostly fixed text: definitions, criteria and few-shot examples, with a small trace-specific tail. Put the fixed part first so provider prompt caching applies. Cache reads bill at 0.05x of list input on Claude Opus 5.5 ($0.20 per 1M) and GPT-6.1 Sol ($0.10), and at 0.1x on most other current models (Claude Sonnet 5.5 and GPT-6 Sol: $0.20). Both vendors charge 1.25x list input for the cache write (Anthropic's 5-minute tier; OpenAI's cache TTL is fixed at 30 minutes on GPT-5.6 and later). Offline eval runs rarely need answers within seconds, so send them through batch APIs at half of list: Opus 5.5 batch is $2/$10 and GPT-6 Sol Batch/Flex is $1/$5 per 1M.
+
 ### Latency Considerations for Real-Time Guardrails
 
 | Check Type | Typical Latency | Suitable for Real-Time? |
 |---|---|---|
 | Regex/code checks | <1ms | Yes |
 | Embedding similarity | 10-50ms | Yes |
-| Small LLM (Haiku-class) | 200-500ms | Marginal (adds noticeable delay) |
-| Large LLM (GPT-4o-class) | 1-3s | No (use offline only) |
+| Small LLM (GPT-6 Luna, Haiku-class) at low effort | 200-500ms | Marginal (adds noticeable delay) |
+| Decision-model judge (Jev-class) | ~0.4s (LangChain-measured average) | Marginal |
+| Frontier or mid-tier LLM (Opus 5.5, GPT-6.1 Sol class) | 1-3s at low effort, much more at high reasoning effort | No (use offline only) |
 
 ---
 
@@ -2546,8 +2613,8 @@ Use your platform's built-in UI (Phoenix or Langfuse both have dashboards), or b
 
 ### Mistake #7: Low TNR (Ignoring False Positives)
 
-**What people do:** "My eval catches all real problems (TPR=95%), good enough."
-**Why it's wrong:** If it also false-alarms constantly (TNR=22% like a naive first attempt), you'll ignore it.
+**What people do:** "My judge passes good responses correctly (TPR=95%), good enough."
+**Why it's wrong:** If it also lets most real failures through (TNR=22%, like the naive first attempt in Chapter 4), it misses the defects you built it to catch.
 **Fix:** Both TPR AND TNR must be high. Low TNR means the eval is useless.
 
 ### Mistake #8: Not Testing the Evals Themselves
@@ -2575,6 +2642,17 @@ Use your platform's built-in UI (Phoenix or Langfuse both have dashboards), or b
 **What people do:** Build a distributed eval platform before reviewing a single trace.
 **Fix:** Start simple. CSV + Python script + any observability tool. Add complexity only when simple stops working.
 
+### Mistake #13: Letting an Agent Reach Its Grader
+
+**What people do:** Point a coding agent, prompt optimizer, or self-improving loop at the eval suite and treat a rising pass rate as progress.
+**Why it's wrong:** Optimizers game any grader they can reach, and parallel instances collude once they share any writable surface. The 2026 evidence:
+
+- **Reward hacking:** autonomous research agents (17 models, 38 tasks) showed a 30.5% spontaneous reward-hacking rate on open-ended research-pipeline tasks, against 2.9% on narrow kernel tasks. Detailed rejection reasons went with 40.5% cumulative evasion versus 20.3% for a generic rejection, though the authors note that comparison does not isolate the explanations (arXiv 2609.28614).
+- **Leaky graders:** an audit of SWE-Bench Pro v1.0 found that 24% (Opus 4.7) to 73% (Fable 5) of passes on matched tasks were unearned, mostly via reference solutions reachable in git history (arXiv 2609.34262).
+- **Collusion:** OpenAI agents on a time-limited web-research benchmark made about 13,000 edits to dormant public wikis in one mid-June week to share answers (collusion.wiki). METR's August 26 investigation of OpenAI's July ExploitGym cyber evals found about 1,200 agents coordinating on an unsanctioned message board and about 7% of transcripts containing tool-call spoofs (the agent appeared to issue one call while running another). It also cited an outside estimate that 30 to 40% of the targets could not be exploited as intended.
+
+**Fix:** Keep graders, reference answers and repo history outside the agent's sandbox. Re-grade every output in a clean environment, the pattern Scale adopted for SWE-Bench Pro v2 (network-locked sandbox, each diff re-graded on a pristine image). Isolate instances from each other and from the internet, grade from what the environment recorded rather than from the agent's own transcript, and confirm every task is solvable, since impossible tasks push agents toward gaming the grader. Give the agent only pass/fail, not detailed rejection reasons, and hand-review a sample of passes whenever the pass rate jumps.
+
 ---
 
 <a name="chapter-16"></a>
@@ -2584,7 +2662,7 @@ Use your platform's built-in UI (Phoenix or Langfuse both have dashboards), or b
 
 | Tool | Type | Best For | Cost |
 |------|------|----------|------|
-| **Arize Phoenix** | Open source, self-hosted | Single Docker container, full eval suite built-in | Free |
+| **Arize Phoenix** | Source-available (ELv2), self-hosted | Single Docker container, full eval suite built-in | Free |
 | **Langfuse** | Open source, cloud or self-hosted | Polished UI, strong community, major company adoption | Free tier + paid |
 | **Braintrust** | Cloud | Excellent UI, team collaboration | Paid |
 | **LangSmith** | Cloud | LangChain users | Paid |
@@ -2592,9 +2670,10 @@ Use your platform's built-in UI (Phoenix or Langfuse both have dashboards), or b
 
 ### Eval Frameworks
 
-- **Phoenix Evals** (`arize-phoenix-evals`) - Built into Phoenix, `llm_generate` and `llm_classify`
+- **Phoenix Evals** (`arize-phoenix-evals` 3.x) - Built into Phoenix: `create_classifier`, `evaluate_dataframe` and prebuilt metrics. The legacy `llm_generate`/`llm_classify` API was removed in 3.0.0 (April 2026)
 - **Langfuse Evals** - Built-in LLM-as-Judge, custom evaluators via SDK
-- **Simple Evals** (OpenAI) - Lightweight model-graded evals
+- **Promptfoo** - CLI and CI eval runner (MIT, owned by OpenAI since 2026); OpenAI's named migration path off its hosted Evals platform, which shuts down November 30, 2026
+- **Simple Evals** (OpenAI) - Reference implementations of HealthBench, BrowseComp and SimpleQA; no longer updated for new models since July 2025
 - **Ragas** - Specialized for RAG evaluation
 - **DeepEval** - Comprehensive eval framework
 
@@ -2602,7 +2681,7 @@ Use your platform's built-in UI (Phoenix or Langfuse both have dashboards), or b
 
 - **judgy** - Statistical bias correction for LLM judges: [github.com/ai-evals-course/judgy](https://github.com/ai-evals-course/judgy)
 - **rank_bm25** - BM25 retrieval for RAG systems
-- **litellm** - Unified LLM API interface
+- **litellm** - Unified LLM API interface. Pin the version: PyPI releases 1.82.7 and 1.82.8 were compromised (malware advisory GHSA-92x9-889m-jgmw). If you run the LiteLLM proxy, deploy a release that fixes CVE-2026-37004 (unauthenticated RCE, fixed in 1.83.7), CVE-2026-49468 (authentication bypass, fixed in 1.84.0) and CVE-2026-84377 (an authenticated user can redirect calls via `api_base` and exfiltrate stored provider keys; fixed only in specific patch releases such as 1.96.2, with `allow_client_side_credentials=false` as the workaround)
 
 ### Key Principles (Revisited)
 
@@ -2633,14 +2712,14 @@ A plain-language glossary of the technical terms used throughout this guide. Sha
 | **Ground Truth** | Human-verified labels that represent the "correct" answer; used to measure judge accuracy |
 | **True Positive Rate (TPR)** | The percentage of actual positives (e.g., good responses) that the judge correctly identifies. Also called *recall* or *sensitivity*. Formula: TP / (TP + FN) |
 | **True Negative Rate (TNR)** | The percentage of actual negatives (e.g., bad responses) that the judge correctly catches. Also called *specificity*. Formula: TN / (TN + FP) |
-| **False Positive (FP)** | When the judge says "Pass" but the real answer is "Fail" — a missed defect |
-| **False Negative (FN)** | When the judge says "Fail" but the real answer is "Pass" — a false alarm |
+| **False Positive (FP)** | When the judge says "Pass" but the real answer is "Fail" (a missed defect) |
+| **False Negative (FN)** | When the judge says "Fail" but the real answer is "Pass" (a false alarm) |
 | **Precision** | Of all items the judge labeled positive, how many were actually positive. Formula: TP / (TP + FP) |
-| **F1 Score** | The harmonic mean of precision and recall — a single number balancing both. Formula: 2 * (Precision * Recall) / (Precision + Recall) |
-| **Confusion Matrix** | A 2x2 table showing TP, FP, FN, TN counts — the foundation of all classification metrics |
+| **F1 Score** | The harmonic mean of precision and recall: a single number balancing both. Formula: 2 * (Precision * Recall) / (Precision + Recall) |
+| **Confusion Matrix** | A 2x2 table showing TP, FP, FN, TN counts; the foundation of all classification metrics |
 | **Confidence Interval (CI)** | A range of values (e.g., 72%–81%) within which the true metric likely falls, given sampling uncertainty |
 | **Bias Correction** | Adjusting raw judge scores to account for systematic over- or under-counting of passes/fails |
-| **Cohen's Kappa** | A statistic measuring agreement between two raters (or a rater and ground truth), adjusting for chance agreement. Values: <0.2 poor, 0.4–0.6 moderate, 0.6–0.8 substantial, >0.8 almost perfect |
+| **Cohen's Kappa** | A statistic measuring agreement between two raters (or a rater and ground truth), adjusting for chance agreement. Values (Landis and Koch): <0 poor, 0–0.2 slight, 0.2–0.4 fair, 0.4–0.6 moderate, 0.6–0.8 substantial, >0.8 almost perfect |
 
 ### Data & Workflow Terms
 
@@ -2649,7 +2728,7 @@ A plain-language glossary of the technical terms used throughout this guide. Sha
 | **Train/Dev/Test Split** | Dividing labeled data into three sets: Train (for building the judge prompt), Dev (for iterating), Test (for final unbiased measurement) |
 | **Stratified Split** | Splitting data so each subset has the same proportion of Pass/Fail labels as the original |
 | **Few-Shot Examples** | Example input-output pairs included in a prompt to show the model what good evaluation looks like |
-| **Open Coding** | Reading traces and writing freeform notes about what's going wrong — no categories yet |
+| **Open Coding** | Reading traces and writing freeform notes about what's going wrong, with no categories yet |
 | **Axial Coding** | Grouping your open-coded notes into categories (error types) and counting frequency |
 | **Dimensional Sampling** | Systematically creating test inputs that cover all important dimensions (topics, edge cases, user types) |
 | **Failure Mode** | A specific, named way the AI system can fail (e.g., "dietary violation," "hallucinated citation") |
@@ -2659,12 +2738,12 @@ A plain-language glossary of the technical terms used throughout this guide. Sha
 
 | Term | Definition |
 |------|-----------|
-| **Trace** | A complete record of one AI interaction — from user input through all processing steps to final output |
+| **Trace** | A complete record of one AI interaction, from user input through all processing steps to final output |
 | **Span** | A single unit of work within a trace (e.g., one LLM call, one database lookup, one tool invocation) |
 | **Instrumentation** | Adding code to your application so that traces and spans are automatically captured |
 | **Dataset** | A stored collection of examples (inputs + expected outputs) used for running experiments |
 | **Experiment** | Running your AI system (or judge) against a dataset and recording all results |
-| **Annotation** | A label or score attached to a trace or span — can be human-generated or from an automated eval |
+| **Annotation** | A label or score attached to a trace or span; can be human-generated or from an automated eval |
 | **Prompt Version** | A saved snapshot of a prompt template, allowing you to track changes and compare performance |
 
 ### RAG-Specific Terms
@@ -2674,7 +2753,7 @@ A plain-language glossary of the technical terms used throughout this guide. Sha
 | **RAG (Retrieval-Augmented Generation)** | An AI architecture that retrieves relevant documents before generating a response |
 | **BM25** | A classic keyword-based search algorithm used as a baseline for retrieval quality |
 | **Recall@K** | Of all relevant documents, what fraction appear in the top K retrieved results |
-| **MRR (Mean Reciprocal Rank)** | Average of 1/rank for the first relevant document — higher means relevant docs appear sooner |
+| **MRR (Mean Reciprocal Rank)** | Average of 1/rank for the first relevant document; higher means relevant docs appear sooner |
 | **Chunking** | Splitting large documents into smaller pieces for retrieval |
 | **Context Window** | The maximum amount of text an LLM can process in a single call |
 | **Hallucination** | When an LLM generates information not supported by the retrieved context |
@@ -2686,7 +2765,7 @@ A plain-language glossary of the technical terms used throughout this guide. Sha
 | **p_obs (Observed Rate)** | The raw pass rate from the judge, before any correction |
 | **θ̂ (Theta-hat)** | The corrected true success rate after accounting for judge errors |
 | **judgy** | A Python library that computes corrected success rates and confidence intervals given TPR and TNR |
-| **Sampling** | Evaluating a random subset of traces instead of all traces — used to manage cost |
+| **Sampling** | Evaluating a random subset of traces instead of all traces, used to manage cost |
 | **Statistical Significance** | Whether an observed difference is likely real or could be due to random chance |
 
 ---
@@ -2716,14 +2795,15 @@ Confusion Matrix:
 Predicted Pos    |      TP        |       FP        |
 Predicted Neg    |      FN        |       TN        |
 
-TPR (Recall) = TP / (TP + FN)      "Catches real positives"
-TNR (Specificity) = TN / (TN + FP) "Avoids false alarms"
+(Positive = PASS throughout this guide)
+TPR (Recall) = TP / (TP + FN)      "Passes good outputs (few false alarms)"
+TNR (Specificity) = TN / (TN + FP) "Catches real failures"
 Precision = TP / (TP + FP)
 F1 Score = 2 * (Precision * Recall) / (Precision + Recall)
 
 Target for evals:
-- TPR > 80% (catches real issues)
-- TNR > 80% (doesn't false alarm)
+- TPR > 80% (doesn't false-alarm on good outputs)
+- TNR > 80% (catches real failures)
 ```
 
 ### Data Split Ratios
@@ -2857,7 +2937,7 @@ Always ask the judge to explain its reasoning *before* giving the final label. T
 ✅ Good: "Explanation: [your reasoning]. Label: PASS or FAIL"
 ```
 
-**Why it works:** When the model writes the label first, the explanation becomes a post-hoc rationalization. When reasoning comes first, the model actually deliberates, and the label follows logically.
+**Why it works:** When the model writes the label first, the explanation becomes a post-hoc rationalization. When reasoning comes first, the model actually deliberates, and the label follows logically. Reasoning models already think before they answer, so the accuracy gain from this ordering may be smaller there; keep the written explanation anyway, because it is what you read when the judge disagrees with a human label.
 
 ### 2. Be Ruthlessly Specific About Criteria
 
@@ -2903,7 +2983,9 @@ Generic examples are far less effective than examples from your actual data. Alw
 | Generating diverse critiques | 0.5–0.7 | Some creativity for different angles |
 | Brainstorming failure modes | 0.7–1.0 | High creativity for exploration |
 
-For judge evaluation, always use temperature 0.0. You want the same input to produce the same output every time.
+For judge evaluation on models that accept it, use temperature 0.0. You want the same input to produce the same output every time.
+
+This table applies only to models that still take a `temperature` parameter, and that set is shrinking (see "Pin the judge" in Chapter 4, Step 7). On reasoning models that reject sampling parameters, use the lowest reasoning effort that holds your TPR/TNR, pin the model ID and effort, and if verdicts still vary between runs, run the judge three times and take the majority label.
 
 ### 6. Structured Output Formats
 
@@ -2930,6 +3012,7 @@ Return your evaluation as JSON:
 | **Position bias** | Judge favors the first/last option in a list | Randomize order if comparing multiple outputs |
 | **Sycophancy bias** | Judge agrees with confident-sounding text | Add examples where confident text is wrong |
 | **Anchoring bias** | Judge is swayed by the first piece of evidence | Instruct judge to consider ALL evidence before concluding |
+| **Self-preference bias** | Judge rates outputs from its own model family higher | Use a judge from a different model family than the system it grades |
 
 ### 8. Iterative Refinement Workflow
 
@@ -2946,26 +3029,30 @@ Return your evaluation as JSON:
 ```
 
 **Common iteration patterns:**
-- TPR too low → Judge is missing real failures. Add more Fail examples, make fail criteria more explicit.
-- TNR too low → Judge has too many false alarms. Add "what does NOT count as a failure" section, add Pass examples for edge cases.
+- TNR too low → Judge is missing real failures (passing bad outputs). Add more Fail examples, make fail criteria more explicit.
+- TPR too low → Judge has too many false alarms (failing good outputs). Add "what does NOT count as a failure" section, add Pass examples for edge cases.
 - Both low → Criteria are ambiguous. Rewrite from scratch with clearer definitions.
 
 ### 9. Model Selection for Judges
 
-| Model Tier | When to Use | Typical Accuracy |
+| Model Tier | Examples (list USD per 1M input/output, October 2026) | When to Use |
 |------------|------------|-----------------|
-| GPT-4o / Claude Sonnet 4.6 | High-stakes evals, complex reasoning | 85–95% |
-| GPT-4o-mini / Claude Haiku | Cost-sensitive, high-volume evals | 75–90% |
-| Open-source (Llama, Mistral) | Self-hosted, privacy-sensitive | 70–85% |
+| Frontier | Claude Opus 5.5 ($4/$20), GPT-6 Astra ($10/$50) | High-stakes evals, complex reasoning, setting the performance ceiling |
+| Mid | Claude Sonnet 5.5, GPT-6.1 Sol (both $2/$10) | Most production judges once validated against the ceiling |
+| Fast, low-cost | GPT-6 Luna ($0.10/$0.50), Gemini 3.8 Flash ($0.75/$3.75 introductory through Dec 31, then $1.50/$7.50), Claude Haiku 4.5 ($1/$5) | Cost-sensitive, high-volume evals with clear rubrics |
+| Open weights, self-hosted | Qwen3.8-27B (Apache 2.0), IBM Granite 4.2 30B (Apache 2.0), GLM-5.3-Flash (MIT, 320B total / 18B active) | Data that cannot leave your network |
+| Decision model | TypeSafe Jev (early access) | Binary checklist criteria at very high volume; no written rationale, no abstention |
 
-**Tip:** Start with the most capable model to establish a performance ceiling. Then test whether a cheaper model can match it for your specific use case. Often it can — especially with good few-shot examples.
+Agreement with human labels varies more by task than by tier, so the only accuracy number that counts is the TPR/TNR you measure on your own test set. Where you can, pick a judge from a different model family than the system it grades (see self-preference bias above).
+
+**Tip:** Start with the most capable model to establish a performance ceiling. Then test whether a cheaper model can match it for your specific use case. Often it can, especially with good few-shot examples.
 
 ### 10. Prompt Versioning
 
 Always version your judge prompts. Track:
 - The prompt text
 - The few-shot examples used
-- The model and temperature
+- The exact model ID, reasoning effort, and temperature (where the model accepts it)
 - Dev set metrics (TPR, TNR) at that version
 - Date and reason for the change
 
@@ -2974,11 +3061,17 @@ Both Phoenix and Langfuse have built-in prompt versioning. Use it.
 ```python
 # Phoenix
 from phoenix.client import Client
+from phoenix.client.types import PromptVersion
 px = Client()
 prompt = px.prompts.create(
-    name="dietary-judge-v3",
-    prompt_description="Added edge cases for keto",
-    template=judge_prompt_text,
+    name="dietary-judge",
+    prompt_description="Dietary adherence judge",
+    version=PromptVersion(
+        [{"role": "user", "content": judge_prompt_text}],
+        model_name="gpt-4o",
+        description="v3: added edge cases for keto",
+        template_format="F_STRING",  # judge prompt uses {query}-style variables
+    ),
 )
 
 # Langfuse
@@ -3061,14 +3154,23 @@ experiment = run_experiment(
 #### LLM Evaluation (Batch)
 
 ```python
-from phoenix.evals import OpenAIModel, PromptTemplate, llm_generate, llm_classify
+# arize-phoenix-evals 3.x; llm_generate/llm_classify/OpenAIModel were removed in 3.0.0
+from phoenix.evals import create_classifier, async_evaluate_dataframe
+from phoenix.evals.llm import LLM
+from phoenix.evals.utils import to_annotation_dataframe
 
-results = llm_generate(
-    dataframe=traces_df,
-    template=PromptTemplate("Evaluate: {input}"),
-    model=OpenAIModel(model="gpt-4o"),
-    output_parser=my_parser,
-    concurrency=20,
+judge = create_classifier(
+    name="quality",
+    prompt_template="Evaluate this response.\n\nInput: {input}\nOutput: {output}",
+    llm=LLM(provider="openai", model="gpt-4o"),
+    choices={"pass": 1.0, "fail": 0.0},
+)
+
+results_df = await async_evaluate_dataframe(
+    dataframe=traces_df, evaluators=[judge], concurrency=20,
+)
+await px_client.spans.log_span_annotations_dataframe(
+    dataframe=to_annotation_dataframe(dataframe=results_df)
 )
 ```
 
@@ -3111,10 +3213,22 @@ def generate_answer(question):
 #### Querying Traces
 
 ```python
-langfuse = get_client()
+from datetime import datetime, timedelta, timezone
 
-traces = langfuse.api.trace.list(limit=100, tags=["production"])
-trace = langfuse.api.trace.get("trace_id")
+langfuse = get_client()
+end = datetime.now(timezone.utc)
+
+# v2 observations API (SDK v4). The v1 endpoints behind langfuse.api.trace.list()
+# and .get() are deprecated; Langfuse Cloud serves them only until November 16, 2026.
+# Their replacement is this endpoint: filter by trace_id, or group results by trace_id.
+observations = langfuse.api.observations.get_many(
+    trace_id="trace_id",
+    from_start_time=end - timedelta(days=1),  # v2 queries should always be time-bounded
+    to_start_time=end,
+    fields="core,basic,io",
+    limit=100,
+)
+next_cursor = observations.meta.cursor  # pass as cursor= to fetch the next page
 ```
 
 #### Datasets
@@ -3229,13 +3343,13 @@ compiled = prompt.compile(role="chef", question="Best pasta recipe?")
 
 | Day | Activity | Time | Role Focus |
 |-----|----------|------|------------|
-| 22 | RAG evaluation — retrieval metrics + answer quality (Ch. 6) | 2h | Engineer |
+| 22 | RAG evaluation: retrieval metrics + answer quality (Ch. 6) | 2h | Engineer |
 | 23 | Multi-step pipeline evaluation (Ch. 7) | 2h | Engineer |
 | 24 | Multi-turn conversation evaluation (Ch. 8) | 2h | Engineer |
-| 25 | Safety evals — prompt injection, PII leakage (Ch. 9) | 2h | All |
+| 25 | Safety evals: prompt injection, PII leakage (Ch. 9) | 2h | All |
 | 26 | Set up regression test suite (Ch. 11) | 2h | Engineer |
-| 27 | Human annotation calibration — measure inter-annotator agreement (Ch. 12) | 1h | All |
-| 28 | Optimize for cost — tiered evaluation, sampling strategy (Ch. 13) | 1h | All |
+| 27 | Human annotation calibration: measure inter-annotator agreement (Ch. 12) | 1h | All |
+| 28 | Optimize for cost: tiered evaluation, sampling strategy (Ch. 13) | 1h | All |
 | 29 | Create monitoring dashboard + automated eval runs | 2h | Engineer |
 | 30 | Document eval suite, present to stakeholders, plan maintenance | 2h | All |
 
@@ -3249,7 +3363,7 @@ Real lessons from implementing complete eval pipelines in production:
 
 1. **LLM-as-Judge is powerful but needs guardrails** - Without proper validation, a judge can confidently give wrong answers. Always validate against ground truth.
 
-2. **You must test evaluators against ground truth** - A judge that seems reasonable but has TNR=22% is actively harmful — it misses most real failures.
+2. **You must test evaluators against ground truth** - A judge that seems reasonable but has TNR=22% is actively harmful: it misses most real failures.
 
 3. **Train/Dev/Test splits enable confidence** - Without them, you're fooling yourself about your judge's quality. This is non-negotiable.
 
@@ -3269,7 +3383,7 @@ Real lessons from implementing complete eval pipelines in production:
 
 9. **Safety evals are not optional** - Prompt injection, PII leakage, and jailbreak detection should be running before you worry about quality evals.
 
-10. **Start expensive, then optimize** - Use GPT-4o/Claude Sonnet to establish your performance ceiling, then test whether a cheaper model can match it. Often it can.
+10. **Start expensive, then optimize** - Use a frontier judge (Claude Opus 5.5, GPT-6 Astra) to establish your performance ceiling, then test whether a cheaper model can match it. Often it can.
 
 11. **Sampling beats exhaustive evaluation** - Evaluating 10% of traces with statistical rigor gives you a better answer than evaluating 100% with a bad judge.
 
@@ -3279,27 +3393,27 @@ Real lessons from implementing complete eval pipelines in production:
 
 ## Conclusion
 
-AI evals are not just "testing" — they're a product development methodology that touches engineering, product management, and quality assurance.
+AI evals are not just "testing". They are a product development methodology that touches engineering, product management, and quality assurance.
 
 **Key takeaways:**
 
-1. **Everyone needs evals** — Not just big companies. If your AI app touches users, you need systematic evaluation.
-2. **Start with error analysis** — Sit down and look at your failures before building anything automated (Chapter 3).
-3. **PMs and QAs must lead** — Error analysis and criteria definition are product/quality work, not just engineering tasks.
-4. **Build incrementally** — Start with code-based evals, then add LLM judges, then add safety evals. Don't try to do everything at once.
-5. **Measure what matters** — Application-specific criteria, not generic "helpfulness" scores.
-6. **Both TPR and TNR** — A judge that catches failures but also false-alarms is harmful. Measure both.
-7. **Split your data** — Train/Dev/Test is mandatory. Without it, you're overfitting your judge.
-8. **Correct for bias** — Use statistical correction (Chapter 10) for honest metrics.
-9. **Close the loop** — Evals that don't lead to improvements are wasted effort (Chapter 11).
-10. **Plan for scale** — Start with the best model, then optimize for cost (Chapter 13).
+1. **Everyone needs evals.** Not just big companies. If your AI app touches users, you need systematic evaluation.
+2. **Start with error analysis.** Sit down and look at your failures before building anything automated (Chapter 3).
+3. **PMs and QAs must lead.** Error analysis and criteria definition are product/quality work, not just engineering tasks.
+4. **Build incrementally.** Start with code-based evals, then add LLM judges, then add safety evals. Don't try to do everything at once.
+5. **Measure what matters.** Application-specific criteria, not generic "helpfulness" scores.
+6. **Both TPR and TNR.** A judge that false-alarms on good outputs or lets real failures through is harmful. Measure both.
+7. **Split your data.** Train/Dev/Test is mandatory. Without it, you're overfitting your judge.
+8. **Correct for bias.** Use statistical correction (Chapter 10) for honest metrics.
+9. **Close the loop.** Evals that don't lead to improvements are wasted effort (Chapter 11).
+10. **Plan for scale.** Start with the best model, then optimize for cost (Chapter 13).
 
 **Your action plan (see Appendix G for details):**
 
 1. Week 1: Set up observability (Phoenix, Langfuse, or your tool of choice), do error analysis
 2. Week 2: Build 2-3 core code-based evals
 3. Week 3: Build and validate an LLM judge with proper train/dev/test splits
-4. Week 4: Advanced topics — RAG evals, multi-turn evals, safety evals, automation
+4. Week 4: Advanced topics: RAG evals, multi-turn evals, safety evals, automation
 5. Ongoing: 30 minutes per week maintenance + regression testing
 
 **Remember:** The teams shipping the best AI products are the ones with the best evals. Not the fanciest models. Not the biggest teams. The ones who systematically measure and improve.
@@ -3312,7 +3426,7 @@ Start today. Your future self will thank you.
 
 ### Platform Documentation & Learning Hubs
 
-- **Phoenix Docs**: [docs.arize.com/phoenix](https://docs.arize.com/phoenix)
+- **Phoenix Docs**: [arize.com/docs/phoenix](https://arize.com/docs/phoenix)
 - **Arize Blog & Learning Hub**: [arize.com/blog](https://arize.com/blog/)
 - **Langfuse Docs**: [langfuse.com/docs](https://langfuse.com/docs)
 - **Maven Course (AI Evals for Engineers & PMs)**: [maven.com/parlance-labs/evals](https://maven.com/parlance-labs/evals)
@@ -3320,31 +3434,31 @@ Start today. Your future self will thank you.
 
 ### Research & Thought Leadership
 
-- **OpenAI Evals Platform**: [evals.openai.com](https://evals.openai.com/)
+- **OpenAI Evals Platform**: being retired. Existing evals go read-only October 31, 2026 and the dashboard and API shut down November 30, 2026; see the [deprecations page](https://developers.openai.com/api/docs/deprecations). OpenAI's migration guide points to [Promptfoo](https://www.promptfoo.dev/).
 - **OpenAI Cookbook** (practical examples & guides): [cookbook.openai.com](https://cookbook.openai.com/)
 - **OpenAI Research**: [openai.com/research](https://openai.com/research)
-- **OpenAI Docs (Evals)**: [platform.openai.com/docs/guides/evals](https://platform.openai.com/docs/guides/evals)
 - **Anthropic Research**: [anthropic.com/research](https://www.anthropic.com/research)
 - **METR** (Model Evaluation & Threat Research): [metr.org](https://metr.org/)
 - **Eugene Yan on eval process**: [eugeneyan.com/writing/eval-process](https://eugeneyan.com/writing/eval-process/)
 
 ### Blogs That Shaped This Guide
 
-- **Hamel Husain's Blog**: [hamel.dev](https://hamel.dev/) — Applied AI engineering, LLM evals deep-dives
-- **Shreya Shankar's Site**: [sh-reya.com](https://www.sh-reya.com/) — LLM data systems research, eval methodology
-- **Maxim AI Articles**: [getmaxim.ai/articles](https://www.getmaxim.ai/articles) — Agentic evaluation patterns
+- **Hamel Husain's Blog**: [hamel.dev](https://hamel.dev/): Applied AI engineering, LLM evals deep-dives
+- **Shreya Shankar's Site**: [sh-reya.com](https://www.sh-reya.com/): LLM data systems research, eval methodology
+- **Maxim AI Articles**: [getmaxim.ai/articles](https://www.getmaxim.ai/articles): Agentic evaluation patterns
 
 ### Open-Source Tools & Libraries
 
 | Tool | Focus | License | Links |
 |------|-------|---------|-------|
-| **Arize Phoenix** | Observability & evals | ELv2 | [GitHub](https://github.com/Arize-ai/phoenix) · [Docs](https://docs.arize.com/phoenix) |
+| **Arize Phoenix** | Observability & evals | ELv2 | [GitHub](https://github.com/Arize-ai/phoenix) · [Docs](https://arize.com/docs/phoenix) |
+| **Promptfoo** | CLI/CI evals, red teaming | MIT (OpenAI-owned) | [GitHub](https://github.com/promptfoo/promptfoo) · [Docs](https://www.promptfoo.dev/docs/intro/) |
 | **Langfuse** | Custom pipelines & tracing | MIT | [GitHub](https://github.com/langfuse/langfuse) · [Docs](https://langfuse.com/docs) |
 | **RAGAS** | RAG-specific evaluation | Apache 2.0 | [GitHub](https://github.com/explodinggradients/ragas) · [Docs](https://docs.ragas.io/) |
 | **Comet Opik** | LLM tracing & evaluation | Apache 2.0 | [GitHub](https://github.com/comet-ml/opik) · [Site](https://www.comet.com/site/products/opik/) |
 | **judgy** | Statistical bias correction | Open | [GitHub](https://github.com/ai-evals-course/judgy) |
 | **Braintrust** | Experimentation & logging | Partial | [Docs](https://www.braintrust.dev/docs) |
-| **Galileo** | Hallucination detection | Proprietary | [Site](https://www.galileo.ai/) |
+| **Galileo** (now Splunk Agent Observability, Cisco) | Hallucination detection | Proprietary | [Docs](https://docs.galileo.ai/) · [Splunk](https://www.splunk.com/en_us/products/agent-observability.html) |
 | **Maxim** | Agentic system evaluation | Proprietary | [Site](https://www.getmaxim.ai/) |
 
 ### Strategy Comparison Matrix
@@ -3352,13 +3466,13 @@ Start today. Your future self will thank you.
 | Company | Focus | Open Source | Best For | Unique Strength |
 |---------|-------|-------------|----------|-----------------|
 | **Anthropic** | Safety / Red Teaming | Partial | Frontier risks | Constitutional classifiers, multi-attempt adversarial testing |
-| **OpenAI** | Preparedness / Business | Evals toolkit | Enterprise context | SME probing, contextual evals |
-| **Arize** | Observability | Phoenix (ELv2) | Production scale | OTel-native, data lake integration |
+| **OpenAI** | Preparedness / Business | Promptfoo (MIT) | Enterprise context | SME probing, contextual evals; hosted Evals platform shuts down Nov 30, 2026 |
+| **Arize** | Observability | Phoenix (ELv2) | Production scale | OTel-native, data lake integration; Dynatrace agreed to acquire Arize (Aug 2026) |
 | **RAGAS** | RAG-specific | Yes (Apache 2.0) | RAG pipelines | Reference-free metrics, synthetic test data generation |
 | **Maxim** | Agentic Systems | No | Multi-agent apps | Simulation framework, no-code evaluation |
 | **Langfuse** | Custom Pipelines | Yes (MIT) | Data sovereignty | Self-hostable, full control over data |
 | **Braintrust** | Experimentation | Partial | Early-stage teams | Collaborative design, fast iteration |
-| **Galileo** | Hallucinations | No | Quality assurance | ChainPoll, real-time monitoring |
+| **Galileo** (now Splunk Agent Observability) | Hallucinations | No | Quality assurance | ChainPoll, real-time monitoring; Cisco-owned |
 | **Comet Opik** | LLM Tracing & Evals | Yes (Apache 2.0) | End-to-end observability | Framework integrations, online evaluation rules |
 | **METR** | Catastrophic Risk | Research | Policy guidance | Autonomous capability assessment |
 
@@ -3367,9 +3481,9 @@ Start today. Your future self will thank you.
 
 ### Reference Work Credits
 This guide was built on the foundation of the following people's work and ideas. Their courses, blogs, and open-source contributions made this guide possible:
-- Hamel Husain: [@HamelHusain](https://x.com/HamelHusain) — [hamel.dev](https://hamel.dev/)
-- Shreya Shankar: [@sh_reya](https://x.com/sh_reya) — [sh-reya.com](https://www.sh-reya.com/)
-- Eugene Yan: [@eugeneyan](https://x.com/eugeneyan) — [eugeneyan.com](https://eugeneyan.com/)
+- Hamel Husain: [@HamelHusain](https://x.com/HamelHusain), [hamel.dev](https://hamel.dev/)
+- Shreya Shankar: [@sh_reya](https://x.com/sh_reya), [sh-reya.com](https://www.sh-reya.com/)
+- Eugene Yan: [@eugeneyan](https://x.com/eugeneyan), [eugeneyan.com](https://eugeneyan.com/)
 
 ---
 

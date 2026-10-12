@@ -112,30 +112,29 @@ This case study covers designing an AI-powered content moderation system for a s
 └──────────────────────────────────────────────────────────┘│    │
 ```
 
-The tiered pipeline as a decision tree. Each tier escalates only what it cannot decide cheaply. The cost-per-decision ratio between Tier 1 and Tier 4 is roughly 1:5000, so getting routing right is the main lever for unit economics:
+The tiered pipeline as a decision tree. Each tier escalates only what it cannot decide cheaply; percentages are shares of all posts. The cost per decision spans roughly 1:50,000 from Tier 1 to Tier 4, so getting routing right is the main lever for unit economics:
 
 ```mermaid
 flowchart TD
-    IN[Content Ingestion] --> T1{Tier 1: Fast Filters<br/>hash + keyword + pattern<br/>under 10ms, $0.0001}
+    IN[Content Ingestion] --> T1{Tier 1: Fast Filters<br/>hash + keyword + pattern<br/>under 10ms, ~$0.00001}
     T1 -->|blocked: 5%| B1[Block + Report]
-    T1 -->|elevated: pattern hit| T2
-    T1 -->|pass clean: 85%| T2
-    T2{Tier 2: ML Models<br/>vision + text + multimodal<br/>under 100ms, $0.001}
-    T2 -->|high confidence: 85% of T2| AA1[Auto Action]
-    T2 -->|low confidence: 15% of T2| T3
-    T3{Tier 3: LLM Review<br/>nuanced reasoning<br/>under 3s, $0.01}
-    T3 -->|confident| AA2[Auto Action]
-    T3 -->|uncertain: 2%| HR[Human Review<br/>minutes, $0.50]
+    T1 -->|pass or elevated: 95%| T2
+    T2{Tier 2: Safety Classifiers<br/>self-hosted, text + image<br/>under 100ms, ~$0.0002}
+    T2 -->|high confidence: 85%| AA1[Auto Action]
+    T2 -->|low confidence: 10%| T3
+    T3{Tier 3: LLM Review<br/>Gemini 3.8 Flash<br/>under 3s, ~$0.005}
+    T3 -->|confident: 9%| AA2[Auto Action]
+    T3 -->|uncertain: 1%| HR[Human Review<br/>minutes, $0.50]
 ```
 
 ### Processing Tiers
 
-| Tier | Method | Latency | Cost | Coverage |
-|------|--------|---------|------|----------|
-| 1 | Hash/keyword | < 10ms | $0.0001 | 5% blocked |
-| 2 | ML classifiers | < 100ms | $0.001 | 85% auto-decided |
-| 3 | LLM review | < 3s | $0.01 | 8% nuanced |
-| 4 | Human review | Minutes | $0.50 | 2% escalated |
+| Tier | Method | Latency | Cost per decision | Coverage (share of all posts) |
+|------|--------|---------|-------------------|-------------------------------|
+| 1 | Hash/keyword/pattern | < 10ms | ~$0.00001 | 5% blocked |
+| 2 | Self-hosted safety classifiers | < 100ms | ~$0.0002 | 85% auto-decided |
+| 3 | LLM review (Gemini 3.8 Flash) | < 3s | ~$0.005 | 10% reviewed, 9% decided |
+| 4 | Human review | Minutes | $0.50 | 1% escalated |
 
 ---
 
@@ -191,46 +190,53 @@ class FastFilters:
         return FilterResult(action="continue", tier=1)
 ```
 
-### Tier 2: ML Classification
+### Tier 2: Self-Hosted Safety Classifiers
 
 ```python
-### Tier 2: Native Multimodal Classification (Gemini 3 Flash)
-
-```python
-class MultimodalSafety:
+class SafetyClassifiers:
     """
-    Dec 2025 Shift: No separate OCR/Vision models.
-    Gemini 3 Flash handles interleaved text/images natively for <$0.10 / 1M posts.
+    Cheap, fast, high volume: every post that clears Tier 1 lands here.
+    An open multimodal safety model (for example Llama Guard 4 12B) plus
+    in-house classifiers fine-tuned on your own policy labels, served on
+    your GPUs. Escalate to Tier 3 only on low confidence.
     """
     async def classify(self, content: Content) -> dict:
-        # Native multimodal understanding catches context (e.g., text on a protest sign)
-        response = await genai.submit(
-            model="gemini-3-flash",
-            content=[content.text, content.image_bytes],
-            schema=SafetySchema
+        scores = await asyncio.gather(
+            self.policy_model.score(text=content.text, images=content.images),
+            self.spam_model.score(content),
+            self.nsfw_vision_model.score(content.images),
         )
-        return response
+        verdict = self.combine(scores)  # per-category thresholds tuned on human labels
+        return {"verdict": verdict.label, "confidence": verdict.confidence, "tier": 2}
 ```
 
-### Tier 3: Nuanced LLM Review (GPT-5.2-mini)
+### Tier 3: Nuanced LLM Review (Gemini 3.8 Flash)
 
 ```python
+from google.genai import types
+
 class NuanceReviewer:
     """
-    Using GPT-5.2-mini for nuanced context (sarcasm, regional slang).
-    Reasoning capabilities of 2025-mini models exceed 2024-frontier models.
+    Native multimodal review for the ~10% of posts the classifiers are unsure
+    about: sarcasm, regional slang, text on a protest sign, meme context.
+    Gemini 3.8 Flash reads text inside images, so no separate OCR call here.
     """
     async def review(self, content: Content, context: dict) -> dict:
-        result = await client.chat.completions.create(
-            model="gpt-5.2-mini",
-            messages=[
-                {"role": "system", "content": "Analyze for regional hate speech slang."},
-                {"role": "user", "content": content.text}
-            ],
-            response_format={"type": "json_object"}
+        parts = [
+            POLICY_PROMPT,
+            content.text,
+            *[types.Part.from_bytes(data=img, mime_type="image/jpeg") for img in content.images],
+        ]
+        response = await self.client.aio.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=parts,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=ReviewResult,
+                thinking_config=types.ThinkingConfig(thinking_level="low"),
+            ),
         )
-        return json.loads(result)
-```
+        return json.loads(response.text)
 ```
 
 ---
@@ -272,10 +278,10 @@ class ReviewQueueManager:
     
     def __init__(self):
         self.queues = {
-            "critical": PriorityQueue(),  # CSAM, violence - immediate
-            "high": PriorityQueue(),      # Hate speech - < 15 min
-            "standard": PriorityQueue(),  # Other violations - < 1 hour
-            "appeals": PriorityQueue()    # User appeals
+            "critical": PriorityQueue(),  # CSAM, violence - human SLO 15 min
+            "high": PriorityQueue(),      # Hate speech - human SLO 1 hour
+            "standard": PriorityQueue(),  # Other violations - human SLO 24 hours
+            "appeals": PriorityQueue()    # User appeals - SLO 7 days
         }
     
     async def enqueue(self, content: Content, result: ReviewResult):
@@ -360,6 +366,7 @@ class ModeratorDecision:
 | Context manipulation | Multi-turn analysis |
 | Encoded content | Decoding pipeline |
 | Adversarial images | Robust vision models |
+| AI-generated imagery passed off as real | Read provenance metadata and watermark detectors; label per policy |
 
 ### Defensive Pipeline
 
@@ -403,6 +410,17 @@ class AdversarialDefense:
         return text
 ```
 
+### Provenance and AI-Generated Content
+
+Two 2026 rule sets turn content provenance into a pipeline requirement for a platform this size:
+
+| Rule | Timing | What it means for the pipeline |
+|------|--------|--------------------------------|
+| California AI Transparency Act, as amended by AB 2713 (signed September 30, 2026) | Large-platform duties apply from January 1, 2027 | Detect provenance data and digital signatures, show users whether they are present and which GenAI system or capture device made the content, let users inspect or download that data, and do not knowingly strip standards-compliant provenance data on upload, distribution or download |
+| EU AI Act Article 50 and the marking Code of Practice | In force since August 2, 2026; systems already on the market have until December 2, 2026 to mark output | Generators must mark output in a machine-readable way; the Code asks signatories for signed metadata plus an imperceptible watermark (text under 200 tokens is exempt from watermarking) and a free detection tool, with watermark-detection interoperability due February 2, 2027. More uploads will arrive carrying markers your pipeline can read |
+
+The engineering consequence: image and video transcoders in the ingestion path, which usually discard metadata, must carry provenance through, and the moderation record should store detected provenance next to the classifier verdicts. Treat provenance as a signal, not a verdict: absent metadata proves nothing, because most content was never marked. If the platform also ships its own image generator, the AI Act's new Article 5 prohibition on generating non-consensual intimate imagery and CSAM applies from December 2, 2026, including to general-purpose generators without adequate safeguards.
+
 ---
 
 ## Results and Metrics
@@ -416,20 +434,20 @@ class AdversarialDefense:
 | False positive rate | 15% | 4.2% | 72% reduction |
 | Moderator efficiency | 50/day | 200/day | 4x increase |
 
-### Cost Analysis (Dec 2025)
+### Cost Analysis (October 2026, per Day at 10M Posts)
 
-| Component | Per 10M Posts | Notes |
-|-----------|---------------|-------|
-| Tier 1 Filters | $0.10 | Negligible |
-| Tier 2 Multimodal | $0.50 | Gemini 3 Flash ($0.05/1M) |
-| Tier 3 LLM (GPT-5.2) | $0.20 | Nuance checks on 10% traffic |
-| Human Review | $15.00 | Focused on only 1% of volume |
-| **Total** | **$15.80** | **40% reduction vs 2024** |
+| Component | Calculation | Daily Cost | Notes |
+|-----------|-------------|------------|-------|
+| Tier 1 filters | 10M × ~$0.00001 | ~$100 | CPU hash and pattern matching |
+| Tier 2 classifiers | 9.5M × ~$0.0002 | ~$1,900 | About 28 self-hosted H100s around the clock at $2.77 per GPU-hour (Silicon Data index, October 1, 2026), sized for peak load |
+| Tier 3 LLM review | 1M × ~$0.005 | ~$5,000 | Gemini 3.8 Flash, ~2.5K in (policy prompt plus image) / ~150 out at the January 2027 list price ($1.50 / $7.50); about half at the introductory price |
+| Human review | 100K × $0.50 | ~$50,000 | 500 moderators × 200 decisions/day |
+| **Total** | | **~$57,000/day** | Human review is ~88% |
+
+**Why not send everything to the LLM?** At ~$0.005 per post, LLM review of all 10M posts would cost about $50,000 a day, as much as the whole human review budget, and would add seconds of latency to every post. Tier 2 classifiers cost about 25x less per post and answer in milliseconds. Flash-tier prices move fast in both directions, so re-run this comparison when they change; Gemini 3.8 Flash doubles on January 1, 2027.
 
 > [!TIP]
-> **Production Wisdom:** Moving the heavy lifting from 'Tier 2 Vision/OCR' to **Native Multimodal (Gemini 3 Flash)** reduced pipeline complexity by 70% and latency by 400ms.
-
-*Human review still dominates cost but focused on hard cases*
+> **Production wisdom:** Native multimodal LLMs remove the separate OCR step at Tier 3, because the model reads text inside images directly. Keep normalization and OCR in front of Tiers 1 and 2: hash lists, keyword filters and small classifiers cannot read an image, and text-in-image evasion targets exactly those cheap layers.
 
 ---
 
@@ -441,7 +459,7 @@ class AdversarialDefense:
 
 1. **Clarify scale and requirements** (1 min)
    - "What's the volume? What content types? What's acceptable false positive rate?"
-   - "Any regulatory requirements (CSAM reporting, GDPR)?"
+   - "Any regulatory requirements (CSAM reporting, GDPR, provenance display under California's AI Transparency Act from January 2027)?"
 
 2. **Multi-tier architecture** (3 min)
    - "I would use a cascade of increasing sophistication:"
@@ -457,7 +475,7 @@ class AdversarialDefense:
 
 4. **Human-in-the-loop design** (2 min)
    - "Humans for low-confidence decisions and appeals"
-   - "AI handles 95%+ automatically to make human review economically viable"
+   - "AI decides about 99% automatically, which keeps human review at a size 500 moderators can staff"
    - "Feedback loop: human decisions improve ML models"
 
 5. **Adversarial robustness** (2 min)
@@ -475,10 +493,10 @@ class AdversarialDefense:
 
 ## References
 
-- Meta Content Moderation: https://transparency.fb.com/
-- Google Perspective API: https://perspectiveapi.com/
-- OpenAI Moderation: https://platform.openai.com/docs/guides/moderation
+- Meta Content Moderation: https://transparency.meta.com/
+- Google Perspective API (sunsetting; service ends December 31, 2026, so do not build new dependencies on it): https://perspectiveapi.com/
+- OpenAI Moderation: https://developers.openai.com/api/docs/guides/moderation
 
 ---
 
-*Next: [LLM Pricing Reference](../02-model-landscape/03-pricing-and-costs.md)*
+*Next: [Real-Time AI Search Case Study](06-real-time-search.md). For current model prices, see the [LLM Pricing Reference](../02-model-landscape/03-pricing-and-costs.md).*

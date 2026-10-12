@@ -9,6 +9,7 @@ Tokenization is the process of converting text into discrete units (tokens) that
 - [Vocabulary Design Tradeoffs](#vocabulary-design-tradeoffs)
 - [Special Tokens](#special-tokens)
 - [Multilingual Tokenization](#multilingual-tokenization)
+- [Multimodal Tokenization](#multimodal-tokenization-pixels-to-tokens)
 - [Token Counting for Cost Estimation](#token-counting-for-cost-estimation)
 - [Common Tokenization Issues](#common-tokenization-issues)
 - [Practical Tokenization Patterns](#practical-tokenization-patterns)
@@ -38,7 +39,7 @@ Because "strawberry" is tokenized as multiple subwords. The model never sees ind
 
 ### Byte Pair Encoding (BPE)
 
-The most common algorithm. Used by GPT-series, Llama, Claude.
+The most common algorithm. Used by GPT-series, Llama, Qwen, DeepSeek.
 
 **Training algorithm:**
 1. Start with vocabulary of individual bytes (256 tokens)
@@ -103,7 +104,7 @@ Used by T5, ALBERT, some multilingual models.
 
 | Algorithm | Merge Criterion | Tokenization | Used By |
 |-----------|-----------------|--------------|---------|
-| BPE | Frequency | Deterministic | GPT, Llama, Claude |
+| BPE | Frequency | Deterministic | GPT, Llama, Qwen |
 | WordPiece | Likelihood | Deterministic | BERT, DistilBERT |
 | Unigram | Probability | Probabilistic | T5, mT5, XLNet |
 
@@ -116,13 +117,16 @@ Used by T5, ALBERT, some multilingual models.
 | Size | Example | Pros | Cons |
 |------|---------|------|------|
 | Small (10K) | Some early models | Smaller embeddings | Long token sequences |
-| Medium (32K) | Llama 2 | Good balance | Multilingual inefficiency |
-| Large (128K) | Llama 3/4, Claude Sonnet 4.6, Mistral Medium 3.5 | **Current standard.** High compression ratio. | Larger embeddings table |
-| Huge (200K+) | GPT-5.5 (o200k), Claude Opus 4.7 | Native multimodal and multilingual efficiency | Memory pressure at the LM Head |
+| Medium (32K) | Llama 2, Mistral 7B | Good balance | Multilingual inefficiency |
+| Large (100K-152K) | GPT-4 (cl100k), Llama 3 (128K), DeepSeek V3 and V4.1 (~129K), Mistral Tekken (~131K), Qwen3 (~152K) | **Common default for open models.** High compression ratio. | Larger embeddings table |
+| Huge (200K+) | GPT-4o through GPT-5.x (o200k, ~200K), Llama 4 (~202K), Gemma 3 (~262K) | Multimodal and multilingual efficiency | Memory pressure at the LM Head |
+
+Anthropic and Google do not publish vocabulary sizes for Claude and Gemini, and tiktoken covers only OpenAI's published encodings (o200k_base for GPT-4o through GPT-5.x). For any model whose tokenizer you cannot load and confirm, count with the provider's token-counting API or the response `usage` field, not with a proxy tokenizer.
 
 **The vocab-expansion deep dive:**
-- **Llama 3/4 (128k)**: By moving from 32k to 128k, Meta improved English compression by ~15% and non-English languages like Hindi by 3-4x. 
-- **GPT-4o/5.2 (o200k_base)**: Tiktoken's latest encoding provides superior compression for code and multilingual text, reducing API costs indirectly by using fewer tokens for the same meaning.
+- **Llama 3 (128K)**: Meta combined 100K tokens from tiktoken with 28K extra tokens aimed at non-English languages, and reported up to 15% fewer tokens than Llama 2 for the same text. Llama 4 went to ~202K.
+- **GPT-4o through GPT-5.x (o200k_base)**: Doubling cl100k's vocabulary improved compression for code and non-English text, which lowers cost per unit of meaning even at the same per-token price.
+- **Same price, different bill**: a tokenizer change moves your bill without any list-price change. Anthropic's docs say Claude 4.7 and later models use a newer tokenizer that produces roughly 30% more tokens than earlier Claude models for the same text, with the exact increase depending on content. Re-baseline token counts whenever you switch model families.
 
 ### Character vs Subword vs Word
 
@@ -206,7 +210,7 @@ Tokenizers trained primarily on English have poor efficiency for other languages
 | Japanese | - | 3-5+ for equivalent |
 | Korean | - | 2-4+ for equivalent |
 
-**Cost implication:** Non-English users pay 2-3x more per semantic unit.
+**Cost implication:** On English-centric tokenizers, non-English users pay 2-3x more per semantic unit. Larger modern vocabularies narrow the gap for major languages but do not close it.
 
 ### Solutions
 
@@ -216,15 +220,17 @@ Tokenizers trained primarily on English have poor efficiency for other languages
 
 **Models with good multilingual support:**
 - mT5, XLM-R: Trained on 100+ languages
-- GPT-4, Claude 3.5: Large vocabulary with multilingual coverage
+- Current GPT, Claude and Qwen models: large vocabularies with broad multilingual coverage
 - Gemini: Designed for multilingual from the start
 
-| Model | Chinese | Japanese | Korean | Hindi |
+Approximate token multiplier versus equivalent English text (illustrative; measure on your own corpus, since ratios vary by domain and script):
+
+| Tokenizer | Chinese | Japanese | Korean | Hindi |
 |-------|---------|----------|--------|--------|
 | GPT-2 | 2.5x | 3.0x | 2.8x | 6.0x |
 | GPT-4 (cl100k) | 1.4x | 1.6x | 1.5x | 3.2x |
-| GPT-5.2 (o200k) | 1.1x | 1.2x | 1.1x | 1.4x |
-| Llama 3/4 (128k)| 1.2x | 1.3x | 1.2x | 1.5x |
+| o200k (GPT-4o through GPT-5.x) | 1.1x | 1.2x | 1.1x | 1.4x |
+| Llama 3 (128K) | 1.2x | 1.3x | 1.2x | 1.5x |
 
 ---
 
@@ -236,10 +242,12 @@ Modern native multimodal models do not just "see" images; they tokenize them.
 Images are split into patches (e.g., 14x14 pixels). Each patch is passed through a vision encoder (like SigLIP) to produce a single visual token.
 - **Fixed Token Cost**: Most models use a fixed number of tokens per image at a specific resolution (e.g., 256 or 729 tokens per image).
 - **Dynamic Resolution**: Some models (Gemini 3) use a variable number of tokens depending on image aspect ratio and detail level.
+- **Encoder-free**: Gemma 4 12B "Unified" (June 2026) skips the vision encoder and projects raw image patches and audio waveforms into the LLM embedding space with lightweight linear layers. Token cost then follows patch count directly.
 
 ### Audio/Video Tokenization
 - **Audio**: Compressed into discrete units using codecs like EnCodec, then represented as a sequence of audio tokens.
 - **Video**: Treated as a sequence of image frames (temporal tokenization). A 1-second video @ 1FPS might cost as much as 1 high-res image.
+- **Agentic video processing**: Since September 1, 2026 the Gemini API offers an opt-in `"processing": "agentic"` mode on Gemini 3.7 Flash, 3.6 Flash and 3.5 Flash-Lite (Google's docs also list 3.8 Flash). The model decides which segments to inspect, at what speed and through which modality (frames, audio or transcript) instead of sampling at a fixed rate. Google reports up to 88% fewer tokens and up to 66% lower cost on standard video benchmarks, billed at normal token prices. Static 1 FPS sampling remains the default, so a cost model built on fixed-rate sampling can overestimate agentic-mode tokens by up to roughly 8x.
 
 ---
 
@@ -261,42 +269,59 @@ def estimate_tokens(text: str) -> int:
 
 ### Accurate Counting
 
-Use the model-specific tokenizer:
+Use the model-specific tokenizer, or the provider's counting endpoint when the tokenizer is not public:
 
 ```python
 import tiktoken
 
-# For OpenAI models
-encoding = tiktoken.encoding_for_model("gpt-4")
+# For OpenAI models (tiktoken ships OpenAI encodings only; o200k_base
+# covers GPT-4o through GPT-5.x)
+encoding = tiktoken.get_encoding("o200k_base")
 tokens = encoding.encode("Your text here")
 token_count = len(tokens)
 
-# For Llama/Anthropic, use transformers
+# For open-weight models, use the model's own Hugging Face tokenizer
 from transformers import AutoTokenizer
-tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b")
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
 tokens = tokenizer.encode("Your text here")
 token_count = len(tokens)
+
+# For Claude, the tokenizer is not public: call the count_tokens endpoint
+import anthropic
+client = anthropic.Anthropic()
+count = client.messages.count_tokens(
+    model="claude-sonnet-5-5",
+    messages=[{"role": "user", "content": "Your text here"}],
+)
+token_count = count.input_tokens
 ```
+
+Gemini has an equivalent `countTokens` call, and OpenAI's Responses API has an input-token counting endpoint for models tiktoken does not map. Never estimate Claude or Gemini tokens with tiktoken: different vocabularies give different counts for the same text.
+
+### Reasoning Tokens
+
+With reasoning models, the visible answer is only part of the output bill. Thinking or reasoning tokens are billed as output on OpenAI, Anthropic and Google models even when the raw reasoning is not returned, and their volume depends on the effort or thinking level you set. Budget from the API's `usage` field on real traffic, not from the length of the visible response.
 
 ### Cost Calculation
 
 ```python
-def calculate_cost(input_text: str, output_text: str, model: str) -> float:
-    pricing = {
-        "gpt-4o": {"input": 2.50, "output": 10.00},  # per 1M tokens
-        "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-        "claude-3.5-sonnet": {"input": 3.00, "output": 15.00},
-    }
-    
-    encoding = tiktoken.encoding_for_model(model)
-    input_tokens = len(encoding.encode(input_text))
-    output_tokens = len(encoding.encode(output_text))
-    
-    cost = (
-        (input_tokens / 1_000_000) * pricing[model]["input"] +
-        (output_tokens / 1_000_000) * pricing[model]["output"]
+# USD per 1M tokens, standard tier list prices as of October 2026.
+# Excludes cache reads/writes, batch discounts and long-context surcharges
+# (OpenAI bills the whole request at higher rates above 272K input tokens).
+PRICING = {
+    "gpt-6-sol": {"input": 2.00, "output": 10.00},
+    "gpt-6-luna": {"input": 0.10, "output": 0.50},
+    "claude-sonnet-5-5": {"input": 2.00, "output": 10.00},
+}
+
+def calculate_cost(input_tokens: int, output_tokens: int, model: str) -> float:
+    """Token counts come from the response's usage field (output includes
+    reasoning tokens), not from re-tokenizing text with a different tokenizer."""
+    rates = PRICING[model]
+    return (
+        (input_tokens / 1_000_000) * rates["input"] +
+        (output_tokens / 1_000_000) * rates["output"]
     )
-    return cost
 ```
 
 ---
@@ -376,7 +401,8 @@ def fit_to_context(
     max_tokens: int = 8000,
     reserve_for_output: int = 2000
 ) -> str:
-    encoding = tiktoken.encoding_for_model("gpt-4")
+    # Use the target model's tokenizer; o200k_base fits OpenAI models only
+    encoding = tiktoken.get_encoding("o200k_base")
     
     available = max_tokens - reserve_for_output
     
@@ -409,7 +435,7 @@ def chunk_at_token_boundaries(
     chunk_size: int = 500,
     overlap: int = 50
 ) -> list[str]:
-    encoding = tiktoken.encoding_for_model("gpt-4")
+    encoding = tiktoken.get_encoding("o200k_base")
     tokens = encoding.encode(text)
     
     chunks = []
@@ -455,7 +481,7 @@ budget.allocate("output_reserve", 2000)
 
 ## Interview Questions
 
-### Q: Why does GPT-4 struggle with simple character counting?
+### Q: Why do LLMs struggle with simple character counting?
 
 **Strong answer:**
 Tokenization converts text to subword units, not characters. When asked "How many 'r's in strawberry?", the model sees tokens like ["str", "aw", "berry"] rather than individual letters.
@@ -470,16 +496,18 @@ The solution is to prompt the model to spell out the word character by character
 For rough estimation: multiply word count by 1.3 for English text.
 
 For accurate counting: Use the model-specific tokenizer.
-- OpenAI: tiktoken library
-- Others: transformers AutoTokenizer
+- OpenAI: tiktoken for the encodings it ships (o200k_base for GPT-4o through GPT-5.x); for a model tiktoken does not map, the Responses API input-token counting endpoint or the `usage` field
+- Open-weight models: the model's own Hugging Face tokenizer
+- Claude and Gemini: the provider's token-counting endpoint (tokenizers are not public)
 
 Important considerations:
-- Non-English text uses 1.5-3x more tokens
+- Non-English text uses more tokens: roughly 1.1-1.5x for major languages on modern 128K-200K vocabularies, 3x or more on older tokenizers and less-covered scripts
 - Code and structured data tokenize inefficiently
-- Always budget extra for output tokens (typically priced higher)
-- Include system prompts and formatting tokens
+- Always budget extra for output tokens (priced 3-6x input; 5x on most current frontier models), including reasoning tokens, which are billed as output and scale with the effort level
+- Include system prompts, tool definitions and formatting tokens
+- The same text costs a different number of tokens on each vendor, so compare cost per completed task, not price per token
 
-For production cost estimation, I sample real requests and measure actual token usage, then apply safety margins.
+For production cost estimation, I sample real requests and measure actual token usage from the API's `usage` field, then apply safety margins. I re-run the measurement on every model migration, because a tokenizer change (Claude 4.7 and later count roughly 30% more tokens for the same text than earlier Claude models, per Anthropic) or a new default effort level moves the bill without any price change.
 
 ### Q: What happens when switching tokenizers between models?
 
@@ -531,6 +559,7 @@ for chunk in ranked_chunks:
 - Wu et al. "Google's Neural Machine Translation System" (WordPiece, 2016)
 - Kudo and Richardson "SentencePiece: A simple and language independent subword tokenizer" (2018)
 - OpenAI tiktoken library: https://github.com/openai/tiktoken
+- Anthropic token counting: https://platform.claude.com/docs/en/build-with-claude/token-counting
 - HuggingFace tokenizers: https://github.com/huggingface/tokenizers
 
 ---

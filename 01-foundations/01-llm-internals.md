@@ -65,8 +65,9 @@ Three main variants emerged based on which parts of the original Transformer are
 | Architecture | Attention Type | Examples | Best For |
 |--------------|---------------|----------|----------|
 | Encoder-only | Bidirectional | BERT, RoBERTa | Classification, NER, embeddings |
-| Decoder-only | Causal (left-to-right) | GPT-4, Claude, Llama | Text generation, chat |
+| Decoder-only | Causal (left-to-right) | GPT-3, Llama, Qwen, Mistral | Text generation, chat |
 | Encoder-Decoder | Cross-attention | T5, BART | Translation, summarization |
+| Causal encoder-decoder (2026) | Causal; decoder KV projected from encoder states | DeepSeek V4.1-Flash | Long-context serving with a small KV cache |
 
 ### Decoder-Only (Most LLMs Today)
 
@@ -107,13 +108,15 @@ Uses bidirectional attention. Each token sees all other tokens. Cannot generate 
 
 ### Encoder-Decoder (The Return of the Encoder)
 
-While decoder-only dominated for years, there has been a partial return to encoder-decoder architectures for specialized **reasoning** and **verification** tasks (e.g., internal verifiers inside the o-series and Claude reasoning models).
+Decoder-only still dominates, but the encoder has reappeared inside a large generative model rather than as a T5-style translation stack. The public example is **DeepSeek V4.1-Flash** (September 10, 2026, MIT weights): a **causal encoder-decoder** whose 40 layers split into a 20-layer causal encoder and a 20-layer decoder, with the decoder's global KV cache projected from the encoder's final hidden states. DeepSeek reports 8B active parameters per token during prefill and 16B during decode, and 890 bytes of global KV per token, about 1/4 of V4-Flash.
+
+**Why it matters for system design:** prefill and decode now have different active-parameter counts, and the KV cache is no longer one K/V stack per layer. Both "FLOPs = 2 x active parameters" and the textbook KV formula need the model card's numbers. See [Prefill and Decode Phases](06-inference-pipeline.md#prefill-and-decode-phases).
 
 ---
 
 ## Mixture of Experts (MoE)
 
-**The most significant architectural shift in frontier models (GPT-5.5, Claude Opus 4.7, Gemini 3.1 Pro, DeepSeek V4, Llama 4 Maverick, Mixtral).**
+**The default architecture for open-weight frontier models (DeepSeek V4 and V4.1, Kimi K3, GLM-5.3, Qwen3.8, MiMo-V2.6, Tencent Hy4; earlier, Llama 4 Maverick and Mixtral).** Google's Gemini technical reports and model cards describe sparse MoE transformers; OpenAI and Anthropic do not publish their architectures, so treat any claim about GPT or Claude internals as speculation.
 
 MoE replaces the dense Feed-Forward Network (FFN) with multiple "experts" and a "router" that selects which experts process a given token.
 
@@ -137,11 +140,12 @@ MoE replaces the dense Feed-Forward Network (FFN) with multiple "experts" and a 
 ```
 
 ### Key MoE Nuances for System Design:
-1. **Total vs. Active Parameters**: A 1.6T parameter MoE model (like DeepSeek V4 Pro) might only use 49B parameters per token. Llama 4 Maverick is 17B active across 128 experts. Kimi K2.6 is 1T total / 32B active.
-    - **Memory constraint**: You must store all 1.2T parameters (high VRAM).
-    - **Compute constraint**: You only pay for 100B params of FLOPs (faster latency).
+1. **Total vs. Active Parameters**: Xiaomi MiMo-V2.6-Pro (September 2026) stores 1.02T parameters but activates 42B per token. DeepSeek V4 Pro is 1.6T total / 49B active. Llama 4 Maverick is 400B total / 17B active, with 128 routed experts plus a shared expert in alternating MoE layers.
+    - **Memory constraint**: Every expert must be resident somewhere. 1.02T parameters is about 1 TB at FP8 and still over 500 GB at 4 bits, before any KV cache. Xiaomi's SGLang recipe spreads MiMo-V2.6-Pro across two 8-GPU nodes (16-way tensor parallelism).
+    - **Compute constraint**: Per-token FLOPs scale with the 42B active parameters, not the 1.02T total.
+    - **The catch at high batch**: Different tokens route to different experts, so a large batch touches most experts every step and the bandwidth saving shrinks. MoE serving is an expert-placement and all-to-all communication problem (expert parallelism), not just "a smaller model."
 2. **Routing Collapse**: If the router only picks one expert, the others don't learn. Modern models use **load balancing loss** and **auxiliary losses** to ensure all experts are utilized.
-3. **DeepSeek-V3 Refinements**: Introduced **Multi-head Latent Attention (MLA)** and **Auxiliary-loss-free load balancing**, which became the de-facto standard for MoE efficiency. DeepSeek V4 (April 2026) extends both techniques to a 1M-token context window.
+3. **DeepSeek Refinements**: **Multi-head Latent Attention (MLA)** (introduced in DeepSeek-V2) and **auxiliary-loss-free load balancing** (DeepSeek-V3) became the de facto standard for MoE efficiency, and other labs adopted MLA (Kimi K2, Tencent Hy4). DeepSeek itself moved on: V4 (previewed April 2026) uses a hybrid of Compressed Sparse Attention and Heavily Compressed Attention, which DeepSeek says needs about 10% of V3.2's KV cache and 27% of its per-token FLOPs at 1M tokens. V4.1-Flash (September 2026) adds Compressed Sparse Attention 2 and FP4 KV caching (see [Attention Mechanisms](03-attention-mechanisms.md#hybrid-and-sparse-attention-in-2026-open-models)).
 
 The routing decision per token, as a flowchart:
 
@@ -172,11 +176,13 @@ The industry has now shifted to **Inference-Optimal** scaling:
 
 ## Native Multimodality
 
-Older models used **Vision Adapters** (connecting a frozen CLIP-style vision encoder to an LLM). Frontier models (GPT-5.2, Gemini 3) are **Native Multimodal**.
+Older models used **Vision Adapters** (connecting a frozen CLIP-style vision encoder to an LLM). Frontier models are now trained **natively multimodal**, and the 2026 open releases show how far the design has moved:
 
 - **Shared Vocabulary**: Visual tokens and text tokens exist in the same latent space.
 - **Uniform Transformer**: The same blocks process both pixels and text.
-- **Benefit**: Much better spatial reasoning and "world model" understanding compared to adapter-based approaches.
+- **Encoder-free inputs**: Gemma 4 12B "Unified" (June 2026, Apache 2.0) projects raw image patches and audio waveforms straight into the LLM embedding space through lightweight linear layers, with no separate vision encoder.
+- **Multimodal by default in open flagships**: MiMo-V2.6 takes text, image, video and audio; GLM-5.3-Flash is the first natively multimodal GLM-5 model, built for GUI agents; DeepSeek V4.1-Flash added native image input. A self-hosted stack now has to budget for image and audio tokens, not just text.
+- **Benefit**: Better spatial reasoning and cross-modal grounding than adapter-based approaches.
 
 ---
 
@@ -274,13 +280,13 @@ Instead of single attention, modern transformers use multiple "heads" that atten
 | Attention Type | K,V per Query | KV Cache Reduction | Examples |
 |----------------|---------------|-------------------|----------|
 | Multi-Head (MHA) | 1:1 | Baseline | GPT-3 |
-| Grouped-Query (GQA) | 8:1 typical | ~8x | Llama 2, Mistral |
+| Grouped-Query (GQA) | 8:1 typical | ~8x | Llama 2 70B, Llama 3, Mistral |
 | Multi-Query (MQA) | All:1 | ~n_heads × | PaLM, Falcon |
 
 **Practical impact:**
-For Llama 2 70B at 8K context:
-- MHA KV cache: ~10 GB per request
-- GQA KV cache: ~1.3 GB per request
+For Llama 3 70B (same attention shape as Llama 2 70B) at 8K context (BF16):
+- MHA KV cache (if it had 64 KV heads): ~21 GB per request
+- GQA KV cache (its actual 8 KV heads): ~2.7 GB per request
 
 This directly affects batch size and therefore throughput.
 
@@ -328,7 +334,8 @@ RoPE(x, pos) = x × cos(pos × θ) + rotate(x) × sin(pos × θ)
 **Properties:**
 - Relative: Attention depends on (pos_q - pos_k)
 - Extrapolates better than absolute
-- Used in: Llama, Mistral, PaLM
+- Used in: Llama, Mistral, PaLM, Qwen, DeepSeek
+- Context extension: scaling methods such as Position Interpolation and YaRN stretch a trained RoPE window. Qwen3.8-Flash-Next is 262K native and reaches 1M with YaRN.
 
 ### ALiBi (Attention with Linear Biases)
 
@@ -413,7 +420,6 @@ def layer_norm(x, gamma, beta):
 
 **Post-LN (Original Transformer):**
 ```
-x = x + Attention(LayerNorm(x))  # Wrong - this is Pre-LN
 x = LayerNorm(x + Attention(x))  # Post-LN: normalize after residual
 ```
 
@@ -484,25 +490,34 @@ Token IDs → Embedding → [Transformer Layer × N] → Output Norm → LM Head
 ### Memory Requirements
 
 ```
-Model weights (FP16) ≈ 2 bytes × parameters
-- 70B model: ~140 GB
-- 7B model: ~14 GB
+Model weights ≈ bytes_per_parameter × parameters
+- 70B at BF16: ~140 GB; FP8: ~70 GB; FP4 (NVFP4/MXFP4 incl. block scales): ~37-40 GB
+- 7B at BF16: ~14 GB
 
-KV Cache per token (FP16):
-= 2 × layers × heads × head_dim × 2 bytes
-- Llama 70B: 2 × 80 × 64 × 128 × 2 = 2.6 MB per token
-- At 8K context: 21 GB per request
+KV cache per token (BF16, standard MHA/GQA attention):
+= 2 (K and V) × layers × kv_heads × head_dim × 2 bytes
+- Llama 2/3 70B (80 layers, 8 KV heads, head_dim 128):
+  2 × 80 × 8 × 128 × 2 = 320 KiB per token
+- At 8K context: ~2.7 GB per request; at 128K (Llama 3.1): ~43 GB
+- Same shape with full MHA (64 KV heads): 2.6 MB per token, ~21 GB at 8K
+- MLA, sliding-window, linear-attention hybrids and compressed KV break
+  this formula: DeepSeek V4.1-Flash reports 890 bytes of global KV per token
+  (its sliding-window KV is extra, capped at the window length)
 ```
 
 ### Compute Requirements
 
 ```
-FLOPs per token forward pass ≈ 2 × parameters
-- 70B model: ~140 TFLOPs per token
-- Generate 100 tokens: 14 PFLOPs
+FLOPs per token, forward pass ≈ 2 × active parameters
+- 70B dense model: ~140 GFLOPs per token
+- Generate 100 tokens: ~14 TFLOPs
 
-H100 at 990 TFLOPS (FP16):
-- Single token: 140ms theoretical (actual: ~20-50ms with batching)
+H100 SXM: ~989 TFLOPS dense BF16, ~3.35 TB/s HBM bandwidth
+- Arithmetic for one token at batch 1: ~0.14 ms
+- Reading 140 GB of BF16 weights once: ~42 ms
+- Batch-1 decode is ~300x memory-bound; batching amortizes each
+  weight read across many requests (in practice 70B BF16 spans 2+ GPUs;
+  the ratio is the point)
 ```
 
 ---
@@ -510,9 +525,9 @@ H100 at 990 TFLOPS (FP16):
 ## Key Takeaways
 
 - The shift from RNN to Transformer was about parallelization, not just quality; this is why GPU scaling laws followed.
-- MoE separates total parameters (memory cost) from active parameters (compute cost): a 1.2T MoE model can serve at the latency of a 100B dense model.
+- MoE separates total parameters (memory cost) from active parameters (compute cost): MiMo-V2.6-Pro stores 1.02T parameters but computes with 42B per token. The saving is largest at small batch; at large batch most experts are touched every step.
 - Inference-optimal scaling beats Chinchilla in production: over-train small models because inference cost dominates training cost over a model's lifetime.
-- GQA is the single highest-impact KV-cache optimization in current models; understand the N:G ratio before discussing serving cost.
+- GQA is the baseline KV-cache optimization (8x on Llama 70B); understand the N:G ratio before discussing serving cost. 2026 open flagships go further with MLA, sliding-window and linear-attention hybrids and compressed KV, so KV bytes per token now differ by orders of magnitude between models. Size from the model card, not the textbook formula.
 - Pre-LN with RMSNorm is the modern default; if you see Post-LN in an interview answer, the candidate is referencing 2018 papers.
 
 ---
@@ -531,8 +546,9 @@ Alternatives:
 - Linear attention (Performer): O(n) using random feature approximation
 - Flash Attention: Still O(n²) compute but O(n) memory via kernel fusion
 - State-space models (Mamba): O(n) fully linear
+- Hybrids (the 2026 production answer): interleave linear-attention or sliding-window layers with a minority of full or sparse attention layers. Qwen3.8-Flash-Next runs Gated DeltaNet in three of every four layers; MiMo-V2.6-Pro uses 60 sliding-window layers and 10 global ones.
 
-The tradeoff: n² is necessary for full long-range dependencies, but most tasks do not need all pairwise interactions.
+The tradeoff: n² is necessary for full long-range dependencies, but most tasks do not need all pairwise interactions. Pure linear attention loses precise recall, which is why production models keep some full or sparse attention layers rather than dropping them entirely.
 
 ### Q: What is the KV cache and why does it matter for serving?
 
@@ -546,7 +562,7 @@ The KV cache stores K and V from previous positions. On each new token:
 
 This reduces per-token complexity from O(n) to O(1) for K and V computation.
 
-**The cost:** Memory scales linearly with sequence length. For Llama 70B at 8K context, KV cache is ~21 GB per request. This limits batch size and requires techniques like PagedAttention.
+**The cost:** Memory scales linearly with sequence length. For Llama 70B (GQA, 8 KV heads, BF16), KV cache is ~2.7 GB per request at 8K context and ~43 GB at 128K; without GQA it would be 8x larger. This limits batch size and requires techniques like PagedAttention, KV quantization (an FP8 KV cache, usually paired with FP4 weights, is the headline 2026 serving configuration) and offload to host memory.
 
 ### Q: Why do modern LLMs use Pre-LN instead of Post-LN?
 
@@ -582,6 +598,9 @@ Llama 2 70B uses GQA with 8 KV heads for 64 query heads, reducing KV cache by 8x
 - Press et al. "Train Short, Test Long: Attention with Linear Biases" (ALiBi, 2022)
 - Shazeer "GLU Variants Improve Transformer" (2020)
 - Ainslie et al. "GQA: Training Generalized Multi-Query Transformer Models" (2023)
+- Peng et al. "YaRN: Efficient Context Window Extension of Large Language Models" (2023)
+- DeepSeek-AI "DeepSeek-V3 Technical Report" (2024)
+- [DeepSeek-V4.1-Flash model card](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash) (2026)
 - [Illustrated Transformer](https://jalammar.github.io/illustrated-transformer/)
 - [The Annotated Transformer](https://nlp.seas.harvard.edu/2018/04/03/attention.html)
 

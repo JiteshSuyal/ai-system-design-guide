@@ -10,7 +10,7 @@ Behavioral questions in AI roles assess how you approach ambiguous problems, col
 - [Sample Answers Using STAR-L](#sample-answers-using-star-l) (6 worked examples)
 - [Questions to Ask Your Interviewers](#questions-to-ask-your-interviewers)
 - [Red Flags to Avoid](#red-flags-to-avoid)
-- [Practicing Out Loud](#practicing-out-loud) ⭐ *NEW*
+- [Practicing Out Loud](#practicing-out-loud)
 - [Preparation Checklist](#preparation-checklist)
 
 ---
@@ -104,11 +104,32 @@ AI systems can cause harm. Strong candidates think proactively about ethics and 
 - Tell me about a time you raised an ethical concern
 - How do you think about fairness in AI systems?
 - Describe a situation where you prioritized safety over speed
+- Your team's agent, or an eval run, reached a system it was never supposed to touch. What do you change, and what do you stop?
 
 **What they look for:**
 - Awareness of AI risks
 - Willingness to slow down for safety
 - Practical approach to mitigation
+- For containment failures: pausing roadmap work with a clear exit criterion, and fixing the control (egress, credentials, kill switch) rather than only the incident
+
+The containment question is not hypothetical. In August 2026 Anthropic recapped incidents in which Claude models reached real systems through a misconfigured third-party eval environment, and said a security-hardening push begun in April had temporarily moved roughly 150 product engineers to security, reliability and privacy work and paused most new product features. In September OpenAI said tool-use training, evaluation and inference on its most capable models remained paused after internal research agents reached outside systems.
+
+---
+
+### Theme 6: Customer-Facing Deployment
+
+Forward deployed engineer (FDE) loops add rounds that are behavioral in form and technical in substance. Aced's description of OpenAI's FDE loop (September 2026; a prep vendor's account, not confirmed by OpenAI) includes a customer role-play with a simulated non-technical executive. Anthropic's Claude Frontier Academy, announced October 2, 2026 as a training and credential program rather than a hiring loop, walks engineers through a simulated enterprise deployment, from use-case selection through security review to handover, then grades them on a practical with new scenarios.
+
+**Questions to expect:**
+- You are embedded at a bank for 12 weeks to take one use case from selection to production handover. Walk through use-case selection, the security review, the eval gate, and what you leave behind so the customer can run it without you.
+- The executive sponsor wants the agent approving refunds autonomously on day one. Respond as you would in the room.
+- Tell me about a time a customer's security or compliance review changed your design.
+
+**What they look for:**
+- Picking a use case by value and measurability, not novelty
+- Treating the security review and the eval gate as design inputs, not paperwork
+- A handover the customer can operate: runbooks, eval sets, named owners, cost dashboards
+- Plain-language tradeoffs for a non-technical executive, ending in a clear recommendation
 
 ---
 
@@ -147,6 +168,20 @@ Strong answer elements:
 - How you evaluated tradeoffs
 - Stakeholder alignment
 - Whether it was the right call
+
+---
+
+### Past-Project Technical Deep Dive
+
+A behavioral round can turn into a design review of your own work. Google's interview pilot (reported by Business Insider in May 2026 and confirmed by Google; junior to mid-level roles on select US teams) adds a technical design discussion of a past project to its Googleyness and Leadership round. Prepare at least one story you can defend at whiteboard depth.
+
+**Q: Walk me through the architecture of something you built. What would you change today?**
+
+Strong answer elements:
+- A diagram you can draw in two minutes, with your own part clearly marked
+- The two or three decisions that mattered, the alternatives, and why you chose as you did
+- Numbers: scale, latency, cost, and quality before and after
+- What broke in production and what you would design differently now
 
 ---
 
@@ -322,6 +357,8 @@ We shipped in 8 weeks with 18% recall improvement (slightly less than their benc
 **Learning:**
 I learned that understanding what motivates others is the key to collaboration. Researchers want impact and credit. By making production success support those goals, I turned potential friction into partnership.
 
+---
+
 ### Example 5: Being Wrong and Walking It Back
 
 **Question:** "Tell me about a time you strongly advocated for a technical decision that turned out to be wrong."
@@ -340,6 +377,8 @@ We kept the hybrid, salvaged about 60% of the migration work, and the postmortem
 
 **Learning:**
 Conviction is useful for getting decisions made and dangerous for unmaking them. I now attach explicit kill criteria to my own proposals, so walking back is a checkpoint, not a confession.
+
+---
 
 ### Example 6: Raising a Concern That Was Dismissed
 
@@ -383,11 +422,12 @@ Strong candidates ask thoughtful questions. Here are AI-specific questions that 
 - How does the team handle models that do not perform as expected?
 - What is the process for raising concerns about AI safety or ethics?
 - How do you balance moving fast with responsible AI practices?
+- What happens when an agent or eval run touches a system it should not? Who can stop it, and how fast?
 
 ### About Growth
 
 - What does success look like in this role after 6 months? After a year?
-- How do engineers stay current with the rapidly changing AI landscape?
+- How do engineers here keep up as models and tooling change?
 - What are the paths for growth from this role?
 
 ### About Compensation and Leveling (for later-stage conversations)
@@ -398,6 +438,7 @@ Save these for the recruiter call or after an offer signal; asking them shows yo
 - What was the last leveling calibration like for this role? Where do you see me landing and why?
 - What separates this level from the next one up here? Can you give an example of someone who made that jump?
 - How did the team handle compensation during the last market shift?
+- For private companies: how often have employees been able to sell vested shares, and on what terms?
 - For AI-specialized roles: is there a separate track or premium for AI-critical skills, and how is it reviewed as the market moves?
 
 ---
@@ -411,6 +452,7 @@ Save these for the recruiter call or after an offer signal; asking them shows yo
 | Only technical answers | Lacks awareness of human factors |
 | Dismissing ethics | May create liability |
 | No questions for interviewer | Lacks curiosity or engagement |
+| Using an AI assistant in a round that did not allow it | Can be disqualifying; policies differ by company and by round |
 
 ---
 
@@ -423,6 +465,7 @@ Reading stories is not preparing them. The gap between a written story and a spo
 3. **Full mock with interruptions.** Have a peer run 3-4 questions and interrupt you mid-story with "why did you do that?" and "what would you do differently?" Real interviewers probe; rehearsing only clean run-throughs leaves you brittle.
 4. **Drill the bridge sentences.** The transitions ("the result was...", "what I took from it...") are what keep an interviewer oriented. Practice them until they are automatic so your attention stays on content.
 5. **One mock per loop stage.** A recruiter screen, a hiring-manager behavioral, and a bar-raiser style cross-examination reward different depths. Practice at least one round of each shape before a full onsite.
+6. **Rehearse the format you will actually get.** Some firms have moved later rounds back in person to verify candidates (Business Insider, July 2026), while others allow an AI assistant in specific rounds. Ask the recruiter how each round runs, and if the onsite is in person, practice at least one story at a physical whiteboard.
 
 ---
 
@@ -435,6 +478,9 @@ Before your behavioral interviews:
 - [ ] Practice telling stories in 2-3 minutes (timed), plus a 30-second version of each
 - [ ] For each story, identify: situation, your specific actions, measurable results, learnings
 - [ ] Include at least one AI-specific story (model failure, bias, stakeholder education)
+- [ ] Prepare one past project you can defend at design depth: diagram, key decisions, numbers, what you would change
+- [ ] For FDE or solutions roles, prepare one end-to-end customer deployment story (use-case choice, security review, eval gate, handover)
+- [ ] Confirm the AI-use policy for every round. Policies are split: Anthropic's candidate guidance bars AI assistance in live interviews unless told otherwise, Meta runs an AI-enabled coding round, and Google is piloting Gemini in a code-comprehension round for some roles
 - [ ] Record yourself once per story and fix what you hear
 - [ ] Do one full mock with a peer who interrupts
 - [ ] Prepare 3-5 thoughtful questions for interviewers, including the leveling and compensation set for late-stage calls

@@ -42,6 +42,21 @@ LLMs are probabilistic and can produce:
 | Unsafe actions | Executing dangerous operations | System damage, data loss |
 | Off-topic responses | Irrelevant answers | Poor user experience |
 | Format errors | Invalid output structure | Application crashes |
+| Missing required safeguards | No disclosure, crisis protocol, or output filter where the law requires one | Fines, private lawsuits |
+
+### Guardrails Are Becoming Legal Requirements
+
+Some guardrails are no longer a product choice. Each row below names a control a regulator can ask you to demonstrate (status as of October 1, 2026; see [AI Governance and Compliance](04-ai-governance-and-compliance.md) for the full picture):
+
+| Requirement | Status | Guardrail it implies |
+|-------------|--------|----------------------|
+| EU AI Act Article 50 interaction disclosure | Applies since August 2, 2026 | Tell users they are talking to AI; per the Commission's guidelines, agents also say on whose behalf they act |
+| EU AI Act Article 5 ban on generating non-consensual intimate imagery and CSAM (Regulation (EU) 2026/1744) | Applies from December 2, 2026 | Output safeguards on image and video generators wherever such output is reasonably foreseeable, plus red-team evidence that they work |
+| California SB 1119, companion chatbots used by children | Signed September 10, 2026 | Crisis protocols for suicidal ideation, parental controls, independent child-safety audits |
+| Companion-chatbot laws in nine more states (Colorado, Connecticut, Georgia, Hawaii, Idaho, Iowa, Nebraska, Oregon, Washington) | Hawaii in effect since July 2026; the rest in 2027 | AI disclosure and self-harm and sexual-content protections for minors; Oregon adds a private right of action |
+| California SB 947, workplace AI | Signed September 30, 2026 | No sole reliance on AI for discipline or termination: a human makes the final call |
+
+The design consequence: a consumer chatbot needs one disclosure-and-crisis-protocol design that satisfies all of these at once, and the evidence that it fires (logged triggers, tested escalation paths) matters as much as the guardrail itself.
 
 ---
 
@@ -103,7 +118,7 @@ class TopicGuardrail:
         "violence_against_individuals"
     ]
 
-    def __init__(self, allowed_topics: list[str], model: str = "gpt-4o-mini"):
+    def __init__(self, allowed_topics: list[str], model: str = "gpt-6-luna"):
         self.allowed_topics = allowed_topics
         self.classifier = TopicClassifier(model)
 
@@ -234,13 +249,20 @@ class ContentSafetyGuardrail:
 
         return GuardrailResult(passed=True)
 
-# Using OpenAI Moderation API
-def check_with_openai(text: str) -> GuardrailResult:
-    response = openai.Moderation.create(input=text)
-    result = response["results"][0]
+# Using the OpenAI Moderation API
+from openai import OpenAI
 
-    if result["flagged"]:
-        categories = [k for k, v in result["categories"].items() if v]
+client = OpenAI()
+
+def check_with_openai(text: str) -> GuardrailResult:
+    response = client.moderations.create(
+        model="omni-moderation-latest",
+        input=text,
+    )
+    result = response.results[0]
+
+    if result.flagged:
+        categories = [k for k, v in result.categories.model_dump().items() if v]
         return GuardrailResult(
             passed=False,
             reason=f"Flagged categories: {categories}"
@@ -409,6 +431,16 @@ Provide a helpful response.
         return self.llm.generate(response_prompt)
 ```
 
+### What Detection Does Not Buy You
+
+Pattern lists and prompt wrappers are speed bumps. Treat them as cheap first layers, not as the control:
+
+- **Frontier models resist better, not perfectly.** Vendor-reported indirect-injection success on Gray Swan's benchmarks, with 15 attempts per scenario, is 1.0% for Claude Opus 5.5 and 8.5% for GPT-6 Astra (each vendor ran its own setup, so read these as levels, not a head-to-head; see [LLM Security](../12-security-and-access/01-llm-security.md#indirect-prompt-injection-ipi-defense-in-depth)). At 1%, an agent that reads thousands of attacker-reachable documents a day still lets attacks through every day.
+- **User-pasted content is untrusted too.** Anthropic reported that early Claude Opus 5.5 snapshots regressed by treating text pasted into the user turn as unable to contain injections. A document the user pastes deserves the same suspicion as a retrieved web page.
+- **Exfiltration does not need a suspicious URL.** LLMLeak (arXiv 2610.01768) encodes secrets into ordinary-looking reference URLs that the model's normal web-fetch tool requests, reaching 79.7% attack success across 11 open-parameter models. An output filter looking for markdown images misses it; an egress allowlist on fetch tools does not.
+
+The controls that hold are structural: least-privilege tools, egress allowlists, sandboxed execution, and approvals bound to the exact action (see [Action Safety](#action-safety)).
+
 ---
 
 ## Hallucination Mitigation
@@ -460,6 +492,7 @@ class HallucinationGuard:
 
     def check_self_consistency(self, query, response, context) -> GuardrailResult:
         # Generate multiple responses and check consistency
+        # (omit temperature on models with fixed sampling; default sampling still varies)
         responses = [
             llm.generate(query, context=context, temperature=0.7)
             for _ in range(3)
@@ -636,8 +669,8 @@ class ActionSafetyGuard:
 
         # High-risk actions need additional validation
         if risk_level == "high":
-            # Require confirmation
-            if not action.get("confirmed"):
+            # Require a confirmation bound to this exact action, not a boolean flag
+            if not self.approval_matches(action):
                 return ValidationResult(
                     allowed=False,
                     reason="requires_confirmation",
@@ -660,7 +693,19 @@ class ActionSafetyGuard:
             )
 
         return ValidationResult(allowed=True)
+
+    def approval_matches(self, action: dict) -> bool:
+        # The approval service stored a digest of exactly what the human saw.
+        # Any change to the tool or its arguments after approval invalidates it,
+        # and consume() makes each approval single-use.
+        canonical = json.dumps(
+            {"type": action["type"], "args": action["args"]}, sort_keys=True
+        )
+        digest = hashlib.sha256(canonical.encode()).hexdigest()
+        return self.approval_store.consume(action.get("approval_id"), digest)
 ```
+
+**Bind the approval to the action.** A `confirmed: true` flag the agent can set, or an approval the harness checks against a different action than it runs, is how **approval laundering** happens: a September 2026 paper (arXiv 2609.38983) names six classes (scope, argument, temporal, tool, delegation, and semantic) in which the action a human approved is not the one that executed. Binding a single-use approval to a digest of the exact call closes some of them; the paper's cryptographic approval token eliminated delegation laundering and its seeded temporal case, but left scope laundering untouched and did not significantly reduce argument laundering, because those diverge below what a field-level check can see. Approval complements a sandbox; it does not replace one. See [Human-in-the-Loop Patterns](../07-agentic-systems/08-human-in-the-loop-patterns.md#approval-laundering).
 
 ### Sandbox Execution
 
@@ -718,6 +763,7 @@ class FallbackChain:
             try:
                 result = strategy.generate(query, context)
 
+                # A provider refusal (HTTP 200, empty content) must fail this check
                 if self.is_acceptable(result):
                     return Response(
                         content=result,
@@ -735,16 +781,48 @@ class FallbackChain:
             confidence="none"
         )
 
-# Usage
+# Usage: the backup is a different vendor, so one outage cannot take out both
 fallback = FallbackChain([
-    PrimaryLLM(model="gpt-4o"),
-    SecondaryLLM(model="claude-3.5-sonnet"),
+    PrimaryLLM(model="claude-sonnet-5-5"),
+    SecondaryLLM(model="gpt-6.1-sol"),
     CachedResponses(),
     HumanEscalation()
 ])
 ```
 
+### Provider Safeguards and Refusals
+
+Your guardrail stack is no longer the only one in the request path. The newest Claude models (Fable 5.1 and 5, Opus 5.5 and 5, Sonnet 5.5) run provider safety classifiers, and a decline arrives as a successful HTTP 200 with `stop_reason: "refusal"`, empty content, and a `stop_details.category`. Design for it like any other guardrail outcome:
+
+```python
+def check_provider_refusal(response) -> GuardrailResult:
+    if response.stop_reason != "refusal":
+        return GuardrailResult(passed=True)
+
+    category = response.stop_details.category  # may be None
+    metrics.counter("provider_refusal", labels={"category": category or "none"}).inc()
+
+    if category == "reasoning_extraction":
+        # The prompt asked the model to write out its reasoning: fix the prompt
+        return GuardrailResult(passed=False, reason="prompt_requests_reasoning",
+                               suggested_action="fix_prompt")
+
+    # Discard any partial output; route to an approved fallback model
+    return GuardrailResult(passed=False, reason=f"provider_refusal:{category}",
+                           suggested_action="fallback_model")
+```
+
+What to know about this layer:
+
+- **It has false positives you do not control.** Anthropic's docs say benign cybersecurity and life-sciences work can trigger the `cyber` and `bio` categories. Anthropic reports its newest cyber safeguards produce about 60% fewer false positives than before, and its latest biology safeguards fire about 85% less often on benign elementary biology and medical questions (vendor-reported).
+- **It costs money.** Since September 24, 2026, pre-output refusals in `bio`, `frontier_llm`, and `reasoning_extraction` are billed on every platform, and all refusals count against rate limits. Break out refusal counts and spend by category on the guardrail dashboard, and budget for it when red-team suites probe those categories.
+- **Your own guardrail prompts can trigger it.** A judge or verifier prompt that asks for a `reasoning` field in JSON or a `<thinking>` section can be refused as `reasoning_extraction`. Ask for a short explanation or the evidence instead.
+- **Fallback is a configuration, not a hope.** Anthropic's server-side fallback (`fallbacks: "default"`, in beta on the Claude API) retries on the model it recommends for the category, or on up to three targets you name from the model's allowed list. It is not available on Bedrock, Google Cloud, or Foundry, where the Anthropic SDK's refusal-fallback middleware does the same retry client-side, and a Message Batches item that sets `fallbacks` comes back as an errored result. Run your own output guardrails on whatever model answered, since the response names it. See [Reliability Patterns](03-reliability-patterns.md#handling-safety-refusals).
+- **Some task classes are refused by design.** GPT-6 Astra's general release restricts scaled vulnerability research and exploit chaining, with looser access through OpenAI's Daybreak trusted-access program; Claude Fable 5.1 may find vulnerabilities but not develop exploits, while Mythos 5.1, the same model with looser safeguards, is limited to vetted programs. If your product lives in security or life sciences, plan for verified-access tiers, not prompt workarounds.
+
 ### Human Escalation
+
+The confidence score has to come from a signal you control. Token logprobs are not a dependable source: GPT-6 Astra does not return them at all. Vote share across samples, a judge score, or retrieval coverage (how many claims trace to a retrieved source) work across providers.
 
 ```python
 class HumanEscalationGuardrail:
@@ -868,6 +946,8 @@ class GuardrailMetrics:
         ).observe(result.latency_ms)
 ```
 
+**A dashboard that goes quiet after an upgrade may be blind, not safe.** OpenAI's Python SDK 3.0 (August 12, 2026) and Anthropic's Python SDK 1.0 (August 20, 2026) both moved their HTTP layer to `httpx2`. Anthropic's migration guide warns that httpx-based tooling (OpenTelemetry's HTTPX instrumentor, Sentry's httpx integration, respx, pytest-httpx, vcrpy) can silently miss SDK requests unless `httpx2.alias_httpx()` runs before anything imports httpx. LLM-call spans and any guardrail or cost signals derived from them drop to zero with no error, and test mocks stop intercepting, so guardrail tests hit the live API. After any provider SDK bump, assert that a known-bad canary request still trips its guardrail and still shows up in the metrics.
+
 ---
 
 ## Guardrail Frameworks
@@ -899,32 +979,39 @@ response = rails.generate(messages=[{"role": "user", "content": user_message}])
 
 ### Guardrails AI
 
+Validators ship as separate packages (for example `pip install guardrails-ai guardrails-ai-toxic-language`, then `python -m guardrails_ai.toxic_language.post_install` to download its local model, so bake that step into the container image rather than the first request). Validating output you already have keeps the guard independent of which provider generated it:
+
 ```python
-from guardrails import Guard
-from guardrails.validators import ValidJSON, ToxicLanguage
+from guardrails import Guard, OnFailAction
+from guardrails_ai.toxic_language import ToxicLanguage
+from pydantic import BaseModel, Field
 
-guard = Guard.from_string(
-    validators=[
-        ValidJSON(on_fail="reask"),
-        ToxicLanguage(threshold=0.8, on_fail="filter")
-    ],
-    prompt="""
-    Extract product information as JSON:
-    {
-        "name": string,
-        "price": number
-    }
+class Product(BaseModel):
+    name: str = Field(description="Product name")
+    price: float = Field(description="Price in USD", ge=0)
 
-    Product description: ${description}
-    """
+# Structure: parse the model's JSON against the schema
+product_guard = Guard.for_pydantic(output_class=Product)
+outcome = product_guard.parse(llm_output)  # llm_output from any provider's client
+if not outcome.validation_passed:
+    ...  # retry with the validation error, as in StructuredOutputRetry above
+
+# Content: check free text sentence by sentence
+toxicity_guard = Guard().use(
+    ToxicLanguage(threshold=0.8, validation_method="sentence", on_fail=OnFailAction.EXCEPTION)
 )
-
-result = guard(
-    llm_api=openai.chat.completions.create,
-    model="gpt-4o",
-    description=product_description
-)
+toxicity_guard.validate(response_text)  # raises on toxic sentences
 ```
+
+### Choosing Where Each Check Runs
+
+| Layer | Examples | Use it for |
+|-------|----------|------------|
+| In-process library | Guardrails AI validators, NeMo Guardrails rails | Schema, topic, and format checks with no extra network hop |
+| Self-hosted safety classifier | Llama Guard 4 12B (multimodal, derived from Llama 4); Mistral Shieldstral 1.0 3B (Apache 2.0, text and image, scores content against a natural-language policy you pass at inference time) | High-volume content safety on your own GPUs, with your own thresholds; a policy-adaptive classifier changes policy without retraining |
+| Hosted moderation endpoint | OpenAI `omni-moderation-latest` | Content safety without hosting a classifier, where sending content to the provider is acceptable |
+| Agent SDK hooks | openai-agents 0.22.1 (September 8, 2026) added MCP server-wide guardrails | Checks on tool calls and tool results inside an agent loop |
+| Provider safeguards | Claude safety classifiers, gated cyber tiers | Not yours to tune: monitor, budget, and route around them |
 
 ---
 
@@ -943,7 +1030,7 @@ Multi-layer approach:
 **2. Prompt engineering:**
 - Explicit instruction: "Answer only from context"
 - Encourage abstention: "If not in context, say you don't know"
-- Low temperature (0.1-0.3)
+- Low temperature (0.1-0.3) where the API still accepts it; newer Claude models (Opus 4.7 and later, Sonnet 5 and later) reject non-default sampling values, Gemini deprecated them in July 2026, and GPT-6 Astra does not support them, so grounding has to come from retrieval, instructions, and verification
 
 **3. Output validation:**
 - Factuality checking: NLI model or LLM judge
@@ -979,7 +1066,8 @@ Multi-layer approach:
 
 **Architecture:**
 - Least privilege: agents only have permissions they need
-- Action validation: verify actions before execution
+- Action validation: verify actions before execution, with approvals bound to the exact call
+- Egress control: allowlist what fetch and browse tools can reach, since secrets can leave inside an ordinary-looking URL
 - Output filtering: catch responses that leak system prompts
 
 No single defense is perfect. The goal is that an attacker needs to bypass multiple layers. I also monitor for injection attempts to update defenses.
@@ -1007,12 +1095,15 @@ I would implement guardrails at input and output:
 **Behavioral guardrails:**
 - Confidence thresholds: escalate to human if uncertain
 - Refusal patterns: graceful decline for out-of-scope requests
-- Disclosure: clearly identify as AI when appropriate
+- Disclosure: identify as AI up front (required under EU AI Act Article 50 and a growing list of US state chatbot laws)
+- Crisis protocol: detect self-harm signals and hand off to a human and crisis resources, which several state laws now require for companion-style bots
 
 **Fallback chain:**
 ```
-Primary LLM -> Backup LLM -> Canned responses -> Human escalation
+Primary LLM -> Backup LLM (different vendor) -> Canned responses -> Human escalation
 ```
+
+Provider safety refusals (HTTP 200 with `stop_reason: "refusal"` on the newest Claude models) count as failures, not successes: route them to the provider's approved fallback model or on to the backup step.
 
 **Monitoring:**
 - Log all guardrail triggers
@@ -1021,7 +1112,7 @@ Primary LLM -> Backup LLM -> Canned responses -> Human escalation
 - Sample blocked conversations for review
 - User satisfaction tracking
 
-The balance is: enough guardrails to be safe, not so many that the bot is useless. Tune thresholds based on the risk profile -- financial services tighter than casual chat.
+The balance is: enough guardrails to be safe, not so many that the bot is useless. Tune thresholds based on the risk profile: financial services tighter than casual chat.
 
 ---
 
@@ -1029,10 +1120,16 @@ The balance is: enough guardrails to be safe, not so many that the bot is useles
 
 - NeMo Guardrails: https://github.com/NVIDIA/NeMo-Guardrails
 - Guardrails AI: https://github.com/guardrails-ai/guardrails
-- OpenAI Moderation: https://platform.openai.com/docs/guides/moderation
+- OpenAI Moderation: https://developers.openai.com/api/docs/guides/moderation
 - Llama Guard: https://ai.meta.com/research/publications/llama-guard/
-- OWASP LLM Top 10: https://owasp.org/www-project-top-10-for-large-language-model-applications/
-- Anthropic Safety: https://docs.anthropic.com/claude/docs/content-moderation
+- Mistral Shieldstral 1.0 3B model card: https://huggingface.co/mistralai/Shieldstral-1.0-3B
+- OWASP LLM Top 10: https://genai.owasp.org/llm-top-10/
+- Anthropic, content moderation guide: https://platform.claude.com/docs/en/about-claude/use-case-guides/content-moderation
+- Anthropic, refusals and fallback: https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback
+- Approval laundering in coding-agent harnesses (arXiv 2609.38983): https://arxiv.org/abs/2609.38983
+- LLMLeak, "The Innocent Courier" (arXiv 2610.01768): https://arxiv.org/abs/2610.01768
+- OpenAI Python SDK, httpx2 notes: https://github.com/openai/openai-python/blob/main/httpx2.md
+- Anthropic Python SDK v1.0.0 release notes: https://github.com/anthropics/anthropic-sdk-python/releases/tag/v1.0.0
 
 ---
 

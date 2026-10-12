@@ -46,7 +46,7 @@ This case study walks through designing a production customer support agent for 
 | Response generation | Natural, accurate, helpful responses | P0 |
 | Conversation memory | Multi-turn context | P0 |
 | Action execution | Create tickets, trigger workflows | P1 |
-| Human escalation | Seamless handoff when needed | P0 |
+| Human escalation | Handoff with full context when needed | P0 |
 | Billing inquiries | Handle sensitive financial data | P1 |
 
 ### Non-Functional Requirements
@@ -66,6 +66,7 @@ This case study walks through designing a production customer support agent for 
 - Tenant isolation (customers only see their data)
 - Audit trail for all actions
 - SOC 2 compliance
+- Tell users they are talking to an AI: the EU AI Act's Article 50 transparency duties have applied since August 2, 2026, and the Commission's guidelines say general public awareness of AI does not make an interaction obvious
 
 ---
 
@@ -198,50 +199,82 @@ stateDiagram-v2
 
 ## Component Deep Dives
 
-### Intent Classification (Dec 2025)
+### Intent Classification
 
 ```python
+INTENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "intent": {"type": "string",
+                   "enum": ["billing", "technical", "account", "general", "escalation_request"]},
+        "entities": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"type": {"type": "string"}, "value": {"type": "string"}},
+            "required": ["type", "value"],
+            "additionalProperties": False,
+        }},
+        "confidence": {"type": "number"},
+    },
+    "required": ["intent", "entities", "confidence"],
+    "additionalProperties": False,
+}
+
 class IntentClassifier:
     async def classify(self, message: str, history: list[dict]) -> dict:
-        # Using GPT-5.5-mini for <100ms classification latency
-        result = await client.chat.completions.create(
-            model="gpt-5.2-mini",
-            messages=[{"role": "user", "content": message}],
-            response_format={"type": "json_object"}
+        # Smallest tier: GPT-6 Luna ($0.10 / $0.50 per 1M tokens). Track p95
+        # latency and use the lowest reasoning effort that holds accuracy.
+        result = await client.responses.create(
+            model="gpt-6-luna",
+            instructions="Classify the customer's latest message.",
+            input=[*history[-4:], {"role": "user", "content": message}],
+            text={"format": {"type": "json_schema", "name": "intent",
+                             "schema": INTENT_SCHEMA, "strict": True}},
         )
-        return json.loads(result.choices[0].message.content)
+        return json.loads(result.output_text)
 ```
 
-### Knowledge Base (Gemini 3 Flash RAG)
+### Knowledge Base (Hybrid Retrieval Plus Rerank)
 
 ```python
 class SupportKnowledgeBase:
-    async def retrieve(self, query: str, context_window: int = 1_000_000) -> list[dict]:
-        # Using Gemini 3 Flash for massive context retrieval
-        # No more 'reranking' needed for many standard support tasks
-        results = await self.sources.search(query, limit=50) 
-        return results
+    async def retrieve(self, query: str, tenant_id: str, top_k: int = 8) -> list[dict]:
+        # Long-context models tempt teams to skip reranking and pass 50 chunks.
+        # At 500K conversations a month, a reranker (about $0.001 per turn) is
+        # far cheaper than paying for 40 extra chunks of input on every turn.
+        candidates = await self.sources.search(
+            query, filters={"tenant_id": tenant_id}, limit=50
+        )
+        return await self.reranker.rerank(query, candidates, top_k=top_k)
 ```
 
-### Response Generation (Claude Sonnet 4.6)
+### Response Generation (Tiered: Claude Haiku 4.5 and Sonnet 5.5)
+
+The 2025 version of this design toggled extended thinking per request on one model. That knob is gone on the newest models: Sonnet 5.5 runs adaptive thinking by default and returns 400 on `thinking: {type: "disabled"}`, and depth is set with `output_config.effort`. Haiku 4.5 rejects the effort parameter. The per-request dial is now **model routing plus effort**.
 
 ```python
 class ResponseGenerator:
+    ROUTINE_MODEL = "claude-haiku-4-5"   # $1 / $5 per 1M; no thinking unless enabled
+    COMPLEX_MODEL = "claude-sonnet-5-5"  # $2 / $10 per 1M; adaptive thinking on by default
+
     async def generate(self, query: str, context: list[dict]) -> dict:
-        # Claude Sonnet 4.6 for 'Hybrid Reasoning'
-        # Toggle 'Thinking' mode for complex billing issues
-        is_complex = self.detect_complexity(query)
-        
-        response = await self.anthropic.messages.create(
-            model="claude-3-7-sonnet-20250219",
-            thinking={"enabled": is_complex, "budget_tokens": 2048},
-            messages=[{"role": "user", "content": f"Context: {context}\nQuery: {query}"}]
-        )
-        return {"response": response.content[0].text}
+        is_complex = self.detect_complexity(query)  # billing disputes, multi-account issues
+        request = {
+            "model": self.COMPLEX_MODEL if is_complex else self.ROUTINE_MODEL,
+            "max_tokens": 4096,
+            "system": SUPPORT_SYSTEM_PROMPT,
+            "messages": [{"role": "user", "content": f"Context: {context}\nQuery: {query}"}],
+        }
+        if is_complex:
+            request["output_config"] = {"effort": "medium"}
+        response = await self.anthropic.messages.create(**request)
+        text = "".join(b.text for b in response.content if b.type == "text")
+        return {"response": text, "model": request["model"]}
 ```
 
+Budget latency per path, not per system. Thinking tokens arrive before the first visible token, and ~1K of them take seconds at typical output speeds, so the complex path cannot meet the 1-second TTFT target. Give complex billing turns their own latency target and stream a status line while the model works, or send `thinking: {type: "between_tools"}` on routes that do not need up-front reasoning and measure whether quality holds.
+
 > [!NOTE]
-> **Production Wisdom:** While Gemini 3 Flash is great for high-volume retrieval, **Claude 3.5 Sonnet** remains the most "stable" generator for many support teams who have spent months fine-tuning guardrails around its specific personality and refusal patterns.
+> **Production wisdom: budget for forced migrations.** Support teams spend months tuning guardrails around one model's tone and refusal patterns, and that tuning does not transfer for free. Sonnet 4.5 retires November 30, 2026. Haiku 4.5 has a Claude API retirement floor of October 15, 2026 (no notice issued yet, and Anthropic gives at least 60 days) and retires on Foundry November 15, while Haiku 5.5 is announced but not released. Keep a regression set of real conversations with expected tone, escalation and refusal behavior, and run it on every model change.
 
 ---
 
@@ -379,6 +412,9 @@ class QualityMonitor:
             metrics.record(f"quality_{criterion}", score)
 ```
 
+> [!WARNING]
+> **Check that your traces still see the model calls.** OpenAI's Python SDK 3.0 (August 12, 2026) and Anthropic's Python SDK 1.0 (August 20, 2026) both moved to `httpx2`. Anthropic's migration guide warns that OpenTelemetry's HTTPX instrumentation, Sentry's httpx integration, respx, pytest-httpx and vcrpy can silently miss SDK requests unless `httpx2.alias_httpx()` runs before anything imports httpx. A sampling monitor like the one above then reports healthy numbers on a shrinking sample. Upgrade the SDKs as a set and compare span counts against request counts before and after.
+
 ### Dashboard Metrics
 
 | Metric | Target | Actual |
@@ -394,26 +430,32 @@ class QualityMonitor:
 
 ## Cost Analysis
 
-### Per-Conversation Cost Breakdown (Dec 2025)
+### Per-Conversation Cost Breakdown (October 2026 List Prices)
+
+Assumes 4 turns per conversation and about 3K input tokens per turn (system prompt, retrieved chunks, account context, history).
 
 | Component | Cost | Notes |
 |-----------|------|-------|
-| Intent classification | $0.0001 | GPT-5.5-mini ($0.10/1M) |
-| RAG retrieval | $0.0001 | Gemini 3 Flash ($0.05/1M) |
-| Thinking mode | $0.0050 | Claude Sonnet 4.6 Thinking (avg 250 tokens) |
-| Response generation | $0.0030 | Claude Sonnet 4.6 ($3/1M in) |
-| Quality sampling | $0.0001 | 5% sample rate on GPT-5.5 |
-| **Total** | **~$0.0083** | **Per conversation (62% reduction vs 2024)** |
+| Intent classification | $0.0003 | GPT-6 Luna ($0.10 / $0.50): one call per turn, ~500 in / 50 out |
+| Retrieval and reranking | $0.0040 | Query embeddings plus 50 candidates × ~400 tokens reranked per turn (Voyage rerank-3, $0.05 per 1M tokens): ~$0.001 per turn |
+| Generation, routine path | $0.0136 | Claude Haiku 4.5 on 80% of conversations: 4 × (3K in / 250 out) = $0.017, weighted 0.8 |
+| Generation, complex path | $0.0148 | Claude Sonnet 5.5 on 20%: same turns plus ~1K thinking tokens per turn = $0.074, weighted 0.2 |
+| Quality sampling | $0.0013 | 5% of conversations scored by a mid-tier judge |
+| **Total** | **~$0.034** | **Per conversation, before prompt caching** |
+
+The complex path is 20% of traffic and over 40% of the model spend, mostly thinking tokens billed at the output rate. Prompt caching the static system prompt and tool definitions trims the input share (cache reads bill at 0.1x on both models).
 
 ### Monthly Cost Projection
 
 | Item | Calculation | Cost |
 |------|-------------|------|
-| Conversations | 500K × $0.022 | $11,000 |
+| Conversations | 500K × $0.034 | $17,000 |
 | Infrastructure | Fixed | $2,000 |
 | Human escalations | 190K × $5 (human cost) | $950,000 |
-| **Total** | | $963,000 |
-| **Savings vs all-human** | 500K × $5 - $963K | $1.5M/year |
+| **Total** | | $969,000 |
+| **Savings vs all-human** | 500K × $5 - $969K | ~$1.53M/month |
+
+Model spend is under 2% of the total. The lever that matters is the escalation rate: every point of escalation moved to a correct auto-resolution saves about $25,000 a month (5K conversations × $5), more than the entire model bill.
 
 ---
 
@@ -424,7 +466,7 @@ class QualityMonitor:
 1. **Intent-based routing** reduced latency by focusing retrieval on relevant sources
 2. **Confidence-based escalation** maintained quality while reducing human load
 3. **Account context** made responses more personalized and accurate
-4. **Lower temperature (0.3)** improved consistency for support responses
+4. **Structured outputs and pinned prompt versions** improved consistency more than sampling settings did. Temperature is no longer a dependable knob: the newest Claude models return 400 on non-default values, and GPT-6 Astra does not accept the parameter
 
 ### What Did Not Work Initially
 
@@ -451,7 +493,7 @@ class QualityMonitor:
    - "What's the ticket volume? What channels? What's the current CSAT?"
 
 2. **State constraints explicitly**
-   - "Key constraints: accuracy over speed, seamless escalation, tenant isolation"
+   - "Key constraints: accuracy over speed, escalation without lost context, tenant isolation"
 
 3. **High-level architecture** (3 min)
    - Draw the flow: intent → routing → RAG → generation → safety → response/escalation
@@ -460,7 +502,7 @@ class QualityMonitor:
    - "Let me detail the confidence-based escalation..."
 
 5. **Address reliability** (3 min)
-   - "For reliability, I would use self-consistency for billing queries, multi-provider fallback"
+   - "For reliability, I would use self-consistency for billing queries and a multi-provider fallback. The fallback has to cross vendors: Anthropic's status feed shows at least 12 major or critical incidents from mid-August to late September 2026, and one OpenAI incident on September 29 degraded its API for over 5 hours, so a 99.9% target cannot rest on one provider"
 
 6. **Metrics and monitoring** (2 min)
    - "Key metrics: CSAT, resolution rate, escalation rate, accuracy sampling"
@@ -472,9 +514,9 @@ class QualityMonitor:
 
 ## References
 
-- Anthropic Customer Support Best Practices: https://docs.anthropic.com/claude/docs/customer-service
-- LangChain Conversational Agents: https://python.langchain.com/docs/use_cases/chatbots
+- Anthropic Customer Support Agent Guide: https://platform.claude.com/docs/en/about-claude/use-case-guides/customer-support-chat
+- LangChain Agents: https://docs.langchain.com/oss/python/langchain/agents
 
 ---
 
-*Next: [Code Assistant Case Study](04-code-assistant.md)*
+*Next: [Financial Analysis Case Study](03-financial-analysis.md)*

@@ -331,10 +331,11 @@ Route to cheapest sufficient model:
 ```python
 class ModelCascade:
     def __init__(self):
+        # (model, input USD per 1M tokens at list price, October 2026)
         self.models = [
-            ("gpt-4o-mini", 0.15),     # Cheapest
-            ("gpt-4o", 2.50),           # Mid-tier
-            ("claude-3.5-sonnet", 3.00) # Most capable
+            ("gpt-6-luna", 0.10),         # Cheapest
+            ("claude-sonnet-5-5", 2.00),  # Mid-tier
+            ("claude-opus-5-5", 4.00)     # Most capable
         ]
     
     async def generate(self, query: str) -> str:
@@ -342,17 +343,19 @@ class ModelCascade:
         complexity = await self.classify_complexity(query)
         
         if complexity == "simple":
-            return await self.call_model("gpt-4o-mini", query)
+            return await self.call_model("gpt-6-luna", query)
         elif complexity == "medium":
-            return await self.call_model("gpt-4o", query)
+            return await self.call_model("claude-sonnet-5-5", query)
         else:
-            return await self.call_model("claude-3.5-sonnet", query)
+            return await self.call_model("claude-opus-5-5", query)
 ```
 
 **When to use:**
 - High query volume
 - Variable query complexity
 - Cost optimization priority
+
+**Routing versus cascading.** The code above routes up front on a classifier. A true cascade runs the cheap model first and escalates only when a verifier or confidence check fails, which pays when most requests are easy and failures are detectable. Two current complications: pin reasoning effort per tier, because defaults move between versions (Claude Opus 5.5 defaults to `medium`, where Opus 5 defaulted to `high`); and re-derive the tiers whenever prices move, because price is no longer a proxy for capability. Opus 5.5 at $4/$20 per 1M scores 58 on the Artificial Analysis Intelligence Index v4.3.2, above the $10/$50 Claude Fable 5.1 at 53 (both at max effort with safeguard fallback).
 
 ---
 
@@ -362,7 +365,7 @@ Draft with small model, verify with large:
 
 ```python
 class SpeculativeExecution:
-    async def generate(self, prompt: str, n_tokens: int = 5) -> str:
+    async def generate(self, prompt: str, n_tokens: int = 5, max_tokens: int = 512) -> str:
         output = []
         
         while len(output) < max_tokens:
@@ -391,6 +394,8 @@ class SpeculativeExecution:
 - Latency-critical applications
 - Have aligned draft model
 - Predictable generation patterns
+
+In production you rarely write this loop yourself; the serving engine runs it. vLLM and SGLang ship EAGLE-3 and native multi-token-prediction (MTP) heads plus DFlash block-diffusion drafters (Inco AI reports 2.7x to 3.4x throughput for DFlash 2 on Qwen3.8-27B), and vLLM also runs DeepSeek's DSpark modules, which ship bundled into the model checkpoint. Speedups shrink as batch size grows, so measure at production concurrency; vLLM says its adaptive verification keeps speculation beneficial up to a concurrency of 256. On a hosted API the equivalent lever is a paid speed tier: OpenAI Fast at 2x the standard rate and Ultrafast at 6x (GA on GPT-6 Astra), or Anthropic's fast mode for Opus 5.5 at 2x (research preview, Claude API only). See [Speculative Decoding](../04-inference-optimization/03-speculative-decoding.md).
 
 ---
 
@@ -430,6 +435,8 @@ class CachingLLM:
 - Cost reduction priority
 - Can tolerate some staleness
 
+**Put the provider's prompt cache under both layers.** Exact and semantic caches help only when whole questions repeat. Prompt (prefix) caching helps every request that shares a stable prefix, which in an agent loop is nearly every call: Anthropic reports that Claude Code traffic runs at 324 input tokens per output token. Cache reads bill at 0.1x input on most models, 0.05x on Claude Opus 5.5 and GPT-6.1 Sol, and 0.025x on Claude Fable 5.1, against a write premium of 1.25x (2x for Anthropic's 1-hour cache; OpenAI GPT-5.6 and later use a fixed 30-minute TTL). Order the prompt so stable parts (system prompt, tool definitions, persistent documents) come first, and treat cache hit rate as an SLO; OpenAI and Anthropic both made cache-miss diagnostics generally available in September 2026.
+
 ---
 
 ## Reliability Patterns
@@ -438,24 +445,36 @@ class CachingLLM:
 
 ```python
 class RetryWithFallback:
-    async def generate(self, query: str) -> str:
+    async def generate(self, query: str) -> LLMResponse:
         providers = [
-            ("openai", "gpt-4o"),
-            ("anthropic", "claude-3.5-sonnet"),
-            ("google", "gemini-1.5-pro")
+            ("openai", "gpt-6-sol"),
+            ("anthropic", "claude-sonnet-5-5"),
+            ("google", "gemini-3.8-flash")
         ]
         
         for provider, model in providers:
             try:
-                return await self.call(provider, model, query)
-            except RateLimitError:
+                response = await self.call(provider, model, query)
+            except (RateLimitError, ServiceError, TimeoutError):
                 continue
-            except ServiceError:
-                continue
+            
+            # A safety refusal is an outcome, not an outage: Claude returns it
+            # as HTTP 200 with stop_reason "refusal". Handle it deliberately
+            # (the provider's own fallback, a user message, or a human), not by
+            # shopping the request to another vendor.
+            if response.stop_reason == "refusal":
+                return self.handle_refusal(response)
+            return response
         
         # All providers failed
         raise AllProvidersUnavailable()
 ```
+
+Three things make fallback harder than the loop suggests:
+
+- **Fallbacks must cross vendors.** Anthropic logged at least 12 major or critical incidents between August 16 and September 29, 2026, and a single OpenAI incident on September 29 degraded the API, ChatGPT, and Codex for about 5 hours 20 minutes. A fallback to a second model from the same vendor shares its failure domain.
+- **A fallback is a behavior change.** Claude thinking blocks are bound to the model and conversation that produced them, so mid-conversation failover has to drop them and rebuild from the visible messages. Request shapes differ too: the newest Claude models return a 400 for forced `tool_choice`, and GPT-6 Astra rejects custom `temperature`. Keep conversation state in a provider-neutral format and run the eval suite against every model in the chain.
+- **Refusals are not errors.** Route on `stop_reason`, not HTTP status, and since September 24, 2026 budget for them: Anthropic bills pre-output refusals in the `bio`, `frontier_llm`, and `reasoning_extraction` categories.
 
 ---
 
@@ -544,21 +563,30 @@ class TokenBudget:
 def track_cost(model: str):
     def decorator(func):
         async def wrapper(*args, **kwargs):
-            start_tokens = get_token_count()
-            result = await func(*args, **kwargs)
-            end_tokens = get_token_count()
+            response = await func(*args, **kwargs)
             
-            cost = calculate_cost(model, end_tokens - start_tokens)
+            # Read usage from the response itself; a global token counter is
+            # wrong under concurrency. Field names vary by provider.
+            u = response.usage
+            cost = calculate_cost(
+                model,
+                uncached_input=u.input_tokens,
+                cache_writes=u.cache_write_tokens,  # 1.25x input (2x for a 1-hour cache)
+                cache_reads=u.cache_read_tokens,    # 0.025x to 0.1x input
+                output=u.output_tokens,             # includes reasoning tokens
+            )
             metrics.record("llm_cost", cost, tags={"model": model})
             
-            return result
+            return response
         return wrapper
     return decorator
 
-@track_cost("gpt-4o")
+@track_cost("gpt-6-sol")
 async def generate_response(query: str):
     return await llm.generate(query)
 ```
+
+Price each token class separately, or the dashboard will be off by multiples: cache reads and writes bill at different rates, reasoning tokens bill as output, OpenAI bills the whole request at long-context rates once input passes 272K tokens, and service tier (Batch, Fast) and data residency multiply the total. See [Pricing and Costs](../02-model-landscape/03-pricing-and-costs.md) for the full formula.
 
 ---
 
@@ -586,7 +614,7 @@ The pattern I choose depends on the accuracy requirements, latency budget, and d
 
 **Retry with exponential backoff** for transient failures. Rate limits and temporary errors are common with LLM APIs.
 
-**Multi-provider fallback** so if OpenAI is having issues, I automatically route to Anthropic or Google. This requires abstracting the LLM interface.
+**Multi-provider fallback** so if OpenAI is having issues, I automatically route to Anthropic or Google. This requires abstracting the LLM interface, keeping conversation state in a provider-neutral format (Claude thinking blocks cannot be replayed into another model), and running my eval suite against every model in the chain so a failover does not silently change quality. I treat safety refusals separately: they come back as successful responses with a refusal stop reason, so I route on the stop reason, not the HTTP status.
 
 **Circuit breaker** to stop hammering a failing service. After N failures, I open the circuit and route to fallback immediately, giving the primary time to recover.
 

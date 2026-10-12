@@ -1,23 +1,24 @@
 # OpenClaw Deep Dive: The Open-Source Personal AI Agent
 
-OpenClaw is an **open-source, self-hosted personal AI agent** that executes tasks through LLMs using messaging platforms as its primary interface. You talk to it via WhatsApp, Telegram, Slack, Discord, or Signal, and it talks back -- running shell commands, controlling your browser, managing calendars, processing emails, and orchestrating multi-step workflows.
+OpenClaw is an **open-source, self-hosted personal AI agent** that executes tasks through LLMs using messaging platforms as its primary interface. You talk to it via WhatsApp, Telegram, Slack, Discord, or Signal, and it talks back by running shell commands, controlling your browser, managing calendars, processing emails, and orchestrating multi-step workflows.
 
 ## Table of Contents
 
 - [What Is OpenClaw](#what-is-openclaw)
 - [History: Clawdbot to Moltbot to OpenClaw](#history)
 - [Architecture Deep Dive](#architecture)
-- [The AgentSkills System](#agentskills)
-- [LLM Provider Configuration](#llm-providers)
-- [Messaging Platform Integrations](#messaging-integrations)
+- [The AgentSkills System](#the-agentskills-system)
+- [LLM Provider Configuration](#llm-provider-configuration)
+- [Messaging Platform Integrations](#messaging-platform-integrations)
 - [Security Model](#security-model)
 - [Deployment Patterns](#deployment-patterns)
-- [Performance Optimization and Scaling](#performance)
-- [Real-World Use Cases](#use-cases)
-- [Limitations and When NOT to Use OpenClaw](#limitations)
-- [Comparison with Alternatives](#comparison)
+- [Performance Optimization and Scaling](#performance-optimization-and-scaling)
+- [Real-World Use Cases](#real-world-use-cases)
+- [Limitations and When NOT to Use OpenClaw](#limitations-and-when-not-to-use-openclaw)
+- [The 2026 Anthropic Subscription-Policy Incident](#the-2026-anthropic-subscription-policy-incident)
+- [Comparison with Alternatives](#comparison-with-alternatives)
 - [Getting Started: Quick Setup Guide](#getting-started)
-- [System Design Interview Angle](#system-design-interview)
+- [System Design Interview Angle](#system-design-interview-angle)
 - [References](#references)
 
 ---
@@ -26,27 +27,31 @@ OpenClaw is an **open-source, self-hosted personal AI agent** that executes task
 
 OpenClaw is:
 
-- **A personal AI agent**: Not a chatbot -- an autonomous agent that acts on your behalf
-- **Self-hosted**: Runs on your machine, VPS, or Raspberry Pi -- you control your data
-- **Messaging-native**: Lives in chat apps you already use (WhatsApp, Telegram, Slack, Discord, Signal, iMessage, and 20+ others)
-- **LLM-agnostic**: Works with Claude, GPT-4, Gemini, DeepSeek, or local models
-- **Skill-extensible**: 100+ pre-configured skills, with a simple format for writing custom ones
-- **Open source**: MIT-licensed, 250K+ GitHub stars as of early 2026
+- **A personal AI agent**: Not a chatbot, but an autonomous agent that acts on your behalf
+- **Self-hosted**: Runs on your machine, VPS, or Raspberry Pi, so you control your data
+- **Messaging-native**: Lives in chat apps you already use (WhatsApp, Telegram, Slack, Discord, Signal, iMessage, Teams, and 20+ others)
+- **LLM-agnostic**: Works with Claude, GPT, Gemini, Muse Spark, DeepSeek, or local models (recent releases added GPT-6.1 Sol, GPT-6 Astra, Fable 5.1 and Muse Spark 1.3)
+- **Skill-extensible**: About 50 bundled skills (bundled plugins ship more), a public registry (ClawHub), and a simple format for writing custom ones
+- **Open source**: MIT-licensed, with about 391K GitHub stars and 82K forks on October 1, 2026
+- **Foundation-governed**: Stewarded by the OpenClaw Foundation, an independent 501(c)(3) that employs the core team and signs releases. There is no paid tier, hosted service or token, and the README says OpenAI is "a donor, not an owner" (Amazon, Red Hat, NVIDIA and GitHub are among the other donors and infrastructure supporters)
+- **Two release trains**: Calendar-versioned builds (2026.9.7 on September 30, 2026) and gateway-only extended-stable builds that the project treats as its LTS line (2026.8.35 on October 2). Pin production gateways to the extended-stable train
 
 ```
-# The simplest way to start
-git clone https://github.com/openclaw/openclaw.git
-cd openclaw
-docker compose up -d
+# The simplest way to start (macOS / Linux / WSL2)
+curl -fsSL https://openclaw.ai/install.sh | bash
 
-# Or via npm
-npm install -g openclaw
-openclaw start
+# Or via npm (Node 24.16+ or 26.1+; Node 26 recommended)
+# --allow-scripts needs npm 11.16+; drop it on older npm
+npm install -g openclaw@latest --allow-scripts=openclaw
+openclaw onboard --install-daemon
+openclaw gateway status
 ```
 
 **The key difference from chatbots:**
-- ChatGPT/Claude.ai: You type, it replies with text
-- OpenClaw: You type, it **does things** -- runs commands, edits files, sends emails, controls smart home devices, manages your calendar
+- A plain chat assistant: You type, it replies with text
+- OpenClaw: You type, it **does things**: runs commands, edits files, sends emails, controls smart home devices, manages your calendar
+
+The chat assistants are closing that gap from the other side. OpenAI dots (announced September 29, 2026) and Meta Muse (September 8) give hosted assistants their own cloud computers, and Anthropic is folding Cowork into the Claude app, with Claude asking for approval before it acts. OpenClaw's distinguishing traits are now self-hosting, model choice and messaging reach, not the ability to act.
 
 ---
 
@@ -59,14 +64,15 @@ openclaw start
 | November 2025 | **Clawdbot** | Peter Steinberger publishes first prototype, built in roughly one hour |
 | January 2026 | 2,000 stars | Early adopters discover the project |
 | January 27, 2026 | **Moltbot** | Renamed after Anthropic trademark complaints (lobster theme preserved) |
-| January 30, 2026 | **OpenClaw** | Renamed again -- Steinberger found "Moltbot" awkward to say |
+| January 30, 2026 | **OpenClaw** | Renamed again; Steinberger found "Moltbot" awkward to say |
 | February 2026 | 145,000+ stars | Explosive growth, surpasses many established open-source projects |
-| February 14, 2026 | -- | Steinberger joins OpenAI, citing access to resources needed to scale |
+| February 14, 2026 | (no rename) | Steinberger joins OpenAI, citing access to resources needed to scale |
 | March 2026 | 250,000+ stars | Overtakes React on GitHub; one of the fastest-growing OSS projects ever |
+| September 30, 2026 | ~391,000 stars | Stewarded by the independent OpenClaw Foundation; extended-stable (LTS-equivalent) gateway builds alongside calendar releases |
 
 ### The Creator
 
-Peter Steinberger is an Austrian software engineer who previously spent 13 years building PSPDFKit, a PDF toolkit used by developers worldwide, before selling the company in 2024. He describes himself as a "vibe coder" and famously said he ships code he does not read -- embodying the new AI-first development philosophy where the human provides intent and the AI provides implementation.
+Peter Steinberger is an Austrian software engineer who previously spent 13 years building PSPDFKit, a PDF toolkit used by developers worldwide, before selling the company in 2024. He describes himself as a "vibe coder" and famously said he ships code he does not read, embodying the new AI-first development philosophy where the human provides intent and the AI provides implementation.
 
 ### Why It Went Viral
 
@@ -88,7 +94,7 @@ OpenClaw hit a nerve because it solved a real problem: LLMs are powerful but sta
  │  (Baileys)   │  │           │   GATEWAY            │     │  (Claude)    │
  ├──────────────┤  │  Channel  │   ┌──────────────┐  │     ├──────────────┤
  │  Telegram    │──┼──Adapters─┼──>│  Router      │  │     │  OpenAI      │
- │  (grammY)    │  │           │   │  (sessions,  │  │     │  (GPT-4)     │
+ │  (grammY)    │  │           │   │  (sessions,  │  │     │  (GPT-6)     │
  ├──────────────┤  │           │   │   bindings)  │  │     ├──────────────┤
  │  Slack       │──┤           │   └──────┬───────┘  │     │  Google      │
  │  (Bolt)      │  │           │          │          │     │  (Gemini)    │
@@ -100,7 +106,7 @@ OpenClaw hit a nerve because it solved a real problem: LLMs are powerful but sta
  │  (signal-cli)│  │           │   └──────┬───────┘  │     └──────────────┘
  ├──────────────┤  │           │          │          │
  │  iMessage    │──┤           │   ┌──────▼───────┐  │     Tools & Skills
- │  (BlueBubbles│  │           │   │  Tool Layer  │  │     ┌──────────────┐
+ │  (imsg)      │  │           │   │  Tool Layer  │  │     ┌──────────────┐
  ├──────────────┤  │           │   │  (skills,    │──┼────>│  Shell exec  │
  │  Teams       │──┘           │   │   browser,   │  │     │  Browser     │
  │  IRC, Matrix │              │   │   files,     │  │     │  File I/O    │
@@ -140,8 +146,8 @@ When a message arrives from any platform, a channel adapter normalizes it into a
 | Telegram | grammY | Bot API |
 | Slack | Bolt | Events API |
 | Discord | discord.js | Gateway API |
-| Signal | signal-cli | D-Bus |
-| iMessage | BlueBubbles | REST API |
+| Signal | signal-cli | signal-cli daemon (native or container) |
+| iMessage | imsg (official plugin; BlueBubbles support was removed) | JSON-RPC over stdio |
 | IRC | irc-framework | IRC protocol |
 | Matrix | matrix-js-sdk | Matrix protocol |
 | Microsoft Teams | Bot Framework | REST API |
@@ -159,33 +165,29 @@ The Agent Runtime is the AI loop. For each incoming message, it:
 
 **4. Multi-Agent Routing**
 
-OpenClaw supports running multiple agents inside one Gateway process. Each agent gets its own workspace, agentDir, sessions, and tool configuration. Inbound messages are routed to agents via bindings:
+OpenClaw supports running multiple agents inside one Gateway process. Each agent gets its own workspace, agentDir, sessions, and tool configuration. Agents are declared under `agents.entries`, and inbound messages are routed to them by top-level `bindings` that match on channel, account or peer:
 
-```json
+```json5
 {
-  "agents": {
-    "list": [
-      {
-        "name": "work-assistant",
-        "agentDir": "./agents/work",
-        "channels": ["slack-work"]
-      },
-      {
-        "name": "home-assistant",
-        "agentDir": "./agents/home",
-        "channels": ["whatsapp-personal", "telegram"]
-      },
-      {
-        "name": "devops-bot",
-        "agentDir": "./agents/devops",
-        "channels": ["discord-infra"]
-      }
-    ]
-  }
+  agents: {
+    entries: {
+      work: { workspace: "~/.openclaw/workspace-work" },
+      home: { workspace: "~/.openclaw/workspace-home" },
+      devops: { workspace: "~/.openclaw/workspace-devops" },
+    },
+  },
+  bindings: [
+    { agentId: "work", match: { channel: "slack", accountId: "*" } },
+    { agentId: "home", match: { channel: "whatsapp", accountId: "personal" } },
+    { agentId: "home", match: { channel: "telegram", accountId: "*" } },
+    { agentId: "devops", match: { channel: "discord", accountId: "*" } },
+  ],
 }
 ```
 
-This means you can have a work assistant on Slack, a personal assistant on WhatsApp, and a DevOps bot on Discord -- all running from one Gateway, with completely isolated memory and permissions.
+Run `openclaw agents list --bindings` to see which agent each route resolves to. Older configs that used an `agents.list` array are migrated by `openclaw doctor --fix`.
+
+This means you can have a work assistant on Slack, a personal assistant on WhatsApp, and a DevOps bot on Discord, all running from one Gateway, with completely isolated memory and permissions.
 
 ---
 
@@ -193,7 +195,7 @@ This means you can have a work assistant on Slack, a personal assistant on Whats
 
 ### How Skills Work
 
-Skills are the mechanism by which OpenClaw gains capabilities beyond basic conversation. Each skill is a directory containing a `SKILL.md` file with YAML frontmatter (metadata) and markdown instructions (behavior).
+Skills are the mechanism by which OpenClaw gains capabilities beyond basic conversation. Each skill is a directory containing a `SKILL.md` file with YAML frontmatter (metadata) and Markdown instructions (behavior). Only `name` and `description` are required; an optional `metadata.openclaw` block gates the skill on what the host actually has.
 
 ```
 ~/.openclaw/skills/
@@ -216,16 +218,9 @@ Skills are the mechanism by which OpenClaw gains capabilities beyond basic conve
 ---
 name: weather-lookup
 description: >
-  Fetch current weather and forecasts for any location.
-  Responds to queries about temperature, rain, and conditions.
-triggers:
-  - weather
-  - temperature
-  - forecast
-  - "is it going to rain"
-tools:
-  - web_search
-  - bash
+  Fetch current weather and forecasts for any location. Use when the user
+  asks about temperature, rain, wind, or whether to bring an umbrella.
+metadata: {"openclaw": {"requires": {"bins": ["curl"]}, "os": ["darwin", "linux"]}}
 ---
 
 # Weather Lookup Skill
@@ -243,21 +238,28 @@ When the user asks about weather:
 Forecast: Clear skies through Thursday, rain expected Friday."
 ```
 
+There is no trigger-keyword field. The `description` is what the model matches against, so write it as "what this does, and when to use it."
+
 ### Skill Resolution Order
 
 Skills can live in multiple locations. When a name collision occurs, the most local copy wins:
 
 ```
 Priority (highest first):
-  1. <workspace>/skills/        # Project-specific skills
-  2. ~/.openclaw/skills/        # User-global skills
-  3. <installed-packages>/      # npm-installed skills
-  4. <bundled>/skills/          # Ships with OpenClaw
+  1. <workspace>/skills/             # Project-specific skills
+  2. <workspace>/.agents/skills/     # Project agent skills
+  3. ~/.agents/skills/               # Personal agent skills
+  4. ~/.openclaw/skills/             # Managed/local skills (state directory)
+  5. Per-agent workshop skills       # Under the agent's directory
+  6. Bundled skills                  # Ship with OpenClaw
+  7. skills.load.extraDirs, plugins  # Extra directories and plugin-provided skills
 ```
+
+A non-empty per-agent allowlist (`agents.entries.<id>.skills`) is the final set for that agent; it replaces `agents.defaults.skills` rather than merging with it.
 
 ### Selective Injection
 
-OpenClaw does **not** inject every skill into every prompt. The runtime selectively injects only the skills relevant to the current turn, based on the skill description and trigger keywords. This prevents prompt bloat and keeps model performance high.
+OpenClaw does **not** inject every skill's instructions into every prompt. Two filters run first: load-time gating drops skills whose `metadata.openclaw` requirements are not met (missing binaries, env vars or config keys, wrong OS), and the agent's skill allowlist drops the rest. The eligible skills go into the system prompt as a compact XML list of name, description and location, which the docs put at about 24 tokens per skill plus the length of those fields. The full `SKILL.md` body is read on demand, and a `skills_search` tool finds skills that did not fit the prompt budget. This is the same progressive-disclosure design as Agent Skills elsewhere: the per-skill cost is small but it is paid on every turn. A rough estimate: 200 eligible skills with one- or two-sentence descriptions add 10K-15K tokens of standing prompt, which is why the allowlist matters.
 
 ### Creating a Custom Skill
 
@@ -271,16 +273,10 @@ cat > SKILL.md << 'EOF'
 ---
 name: deploy-checker
 description: >
-  Monitor deployment status across staging and production.
-  Checks health endpoints, recent commits, and CI status.
-triggers:
-  - deploy
-  - deployment
-  - "is staging up"
-  - "prod status"
-tools:
-  - bash
-  - web_search
+  Monitor deployment status across staging and production: health endpoints,
+  recent commits, and CI status. Use when asked whether staging or prod is up,
+  or what was deployed last.
+metadata: {"openclaw": {"requires": {"bins": ["curl", "git"]}}}
 ---
 
 # Deploy Checker
@@ -302,7 +298,7 @@ EOF
 
 ### Community Skills Ecosystem
 
-The OpenClaw skills ecosystem has grown rapidly, with community-maintained collections containing thousands of skills across categories like DevOps, home automation, content creation, data analysis, and more. However, this openness carries risk -- always review third-party skills before installing, as the early catalog had incidents with malicious scripts.
+The OpenClaw skills ecosystem has grown rapidly, with community-maintained collections containing thousands of skills across categories like DevOps, home automation, content creation, data analysis, and more. The public registry is ClawHub, and `openclaw skills install @owner/<slug>` installs from it. However, this openness carries risk: the docs tell you to treat third-party skills as untrusted code, read them before enabling, and prefer sandboxed runs, and the early catalog had incidents with malicious scripts.
 
 ---
 
@@ -310,71 +306,47 @@ The OpenClaw skills ecosystem has grown rapidly, with community-maintained colle
 
 ### Configuration File
 
-OpenClaw reads its configuration from `~/.openclaw/openclaw.json` (JSON5 format -- comments and trailing commas allowed). The Gateway watches this file and applies changes automatically via hot reload.
+OpenClaw reads its configuration from `~/.openclaw/openclaw.json` (JSON5 format: comments and trailing commas allowed). The Gateway watches this file and applies changes automatically via hot reload.
+
+The official provider plugins (Anthropic, OpenAI, Google, DeepSeek, Ollama and many others) need only credentials, which `openclaw onboard` stores or which come from environment variables such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `DEEPSEEK_API_KEY`; a few, DeepSeek among them, first need a one-line `openclaw plugins install`. Model references use `provider/model`. The `models.providers` block is for custom base URLs, proxies and self-hosted OpenAI-compatible servers:
 
 ```json5
 {
-  // Model provider configuration
-  "models": {
-    "providers": {
-      "anthropic": {
-        "baseUrl": "https://api.anthropic.com",
-        "apiKey": "${ANTHROPIC_API_KEY}",  // env var substitution
-        "models": {
-          "claude-sonnet-4": {
-            "maxTokens": 8192
-          }
-        }
+  // Default model plus a cross-vendor fallback chain
+  agents: {
+    defaults: {
+      model: {
+        primary: "anthropic/claude-sonnet-5-5",
+        fallbacks: ["openai/gpt-6-sol", "deepseek/deepseek-flash"],  // deepseek-flash = V4.1-Flash
       },
-      "openai": {
-        "baseUrl": "https://api.openai.com/v1",
-        "apiKey": "${OPENAI_API_KEY}",
-        "models": {
-          "gpt-4o": {
-            "maxTokens": 4096
-          }
-        }
-      },
-      "custom-deepseek": {
-        "api": "openai",  // OpenAI-compatible API
-        "baseUrl": "https://api.deepseek.com/v1",
-        "apiKey": "${DEEPSEEK_API_KEY}",
-        "models": {
-          "deepseek-chat": {
-            "maxTokens": 4096
-          }
-        }
-      },
-      "local-ollama": {
-        "api": "openai",
-        "baseUrl": "http://localhost:11434/v1",
-        "apiKey": "ollama",  // Ollama accepts any key
-        "models": {
-          "llama3.1:70b": {
-            "maxTokens": 2048
-          }
-        }
-      }
-    }
+    },
   },
 
-  // Default agent model
-  "agents": {
-    "defaults": {
-      "model": "anthropic/claude-sonnet-4"
-    }
-  }
+  // Custom provider: an internal OpenAI-compatible gateway
+  models: {
+    mode: "merge",
+    providers: {
+      "corp-gateway": {
+        baseUrl: "https://llm-gateway.internal.example.com/v1",
+        apiKey: "${CORP_GATEWAY_KEY}",  // env var substitution
+        api: "openai-completions",
+        models: [{ id: "qwen3.8-27b", name: "Qwen3.8 27B", maxTokens: 4096 }],
+      },
+    },
+  },
 }
 ```
+
+Two details that bite. For Ollama, use the native URL (`http://localhost:11434`), not the OpenAI-compatible `/v1` path: the docs warn that `/v1` breaks tool calling and models emit raw tool-call JSON as text. And fallbacks attach to the configured default; a per-agent model is strict (no fallback) unless that agent's entry lists its own `fallbacks`.
 
 ### Provider Selection Strategy
 
 | Provider | Best For | Trade-offs |
 |----------|----------|------------|
-| Anthropic (Claude) | Complex reasoning, coding tasks, long-context | Higher cost, best quality |
-| OpenAI (GPT-4o) | General-purpose, fast responses | Good balance of speed and quality |
-| Google (Gemini) | Budget-conscious testing, generous free tier | Lower reasoning quality |
-| DeepSeek | Cheapest frontier-class option (V4 Flash $0.14/$0.28 per 1M, V4 Pro $0.435/$0.87 after permanent May 22, 2026 discount); 1M context; best for high-volume cache-friendly workloads | Variable availability; open weights also self-hostable |
+| Anthropic (Claude) | Complex reasoning, coding tasks, long-context (1M context at flat pricing) | Higher cost, best quality: Opus 5.5 lists at $4/$20 per 1M tokens and Fable 5.1 at $10/$50. Thinking cannot be disabled on Opus 5.5 |
+| OpenAI (GPT-6 family) | General-purpose; GPT-6 Luna ($0.10/$0.50) for cheap routing, GPT-6 Sol or GPT-6.1 Sol ($2/$10) as the workhorse | Requests above 272K input tokens are billed entirely at long-context rates |
+| Google (Gemini) | Budget-conscious testing, generous free tier; Gemini 3.8 Flash at an introductory $0.75/$3.75 through December 31, 2026 | Price doubles to $1.50/$7.50 on January 1, 2027; Flash-tier reasoning trails the top Claude and GPT models (AA Intelligence Index v4.3: 41 vs 58 for Opus 5.5) |
+| DeepSeek | Cheapest hosted option: V4.1-Flash (`deepseek-flash`) at $0.30/$1.20 per 1M in peak hours and half that off-peak; V4-Pro still served at $1.32/$3.96 peak; 1M context; best for high-volume cache-friendly workloads | Peak windows (01:00-04:00 and 06:00-10:00 UTC, weekdays) double the price; legacy model names are served by newer models, so pin and verify; MIT weights also self-hostable |
 | Local (Ollama) | Privacy-critical, offline use | Requires powerful hardware, lower quality |
 
 ### Model Routing Within OpenClaw
@@ -383,29 +355,33 @@ You can configure different models for different agents, allowing cost optimizat
 
 ```json5
 {
-  "agents": {
-    "defaults": {
-      "model": "openai/gpt-4o-mini"  // Cheap default
+  agents: {
+    defaults: {
+      model: "openai/gpt-6-luna",  // Cheap default
     },
-    "list": [
-      {
-        "name": "coding-agent",
-        "model": "anthropic/claude-sonnet-4"  // Premium for code
+    entries: {
+      coding: {
+        workspace: "~/.openclaw/workspace-coding",
+        // Premium for code, with its own fallback (per-agent models are strict otherwise)
+        model: { primary: "anthropic/claude-sonnet-5-5", fallbacks: ["openai/gpt-6.1-sol"] },
       },
-      {
-        "name": "reminder-bot",
-        "model": "google/gemini-2.0-flash"  // Cheap for simple tasks
-      }
-    ]
-  }
+      reminders: {
+        workspace: "~/.openclaw/workspace-reminders",
+        model: "google/gemini-3.8-flash",  // Cheap for simple tasks
+      },
+    },
+  },
+  // Route channels or peers to these agents with top-level bindings (see Multi-Agent Routing)
 }
 ```
+
+`agents.defaults.utilityModel` covers the other cost leak: short internal calls such as session titles and progress narration. Left unset, OpenClaw uses the primary provider's declared small model where one exists.
 
 ---
 
 ## Messaging Platform Integrations
 
-OpenClaw supports 20+ messaging platforms through its channel adapter architecture:
+OpenClaw supports 20+ messaging platforms through its channel adapter architecture. Telegram ships in the core install and is the docs' recommended first channel (a bot token, no plugin). Most other channels are official plugins installed on demand (`openclaw plugins install @openclaw/<id>`, or during `openclaw onboard`), and a few, such as WeChat, are maintained outside the repo. Each plugin is code that runs inside your Gateway, so review it as you would a skill.
 
 ### Supported Platforms
 
@@ -415,19 +391,20 @@ OpenClaw supports 20+ messaging platforms through its channel adapter architectu
 | Telegram | grammY | Stable | Official Bot API; most reliable channel |
 | Slack | Bolt | Stable | Workspace app installation required |
 | Discord | discord.js | Stable | Bot token required |
-| Signal | signal-cli | Stable | Requires linked device |
-| iMessage | BlueBubbles | Stable | macOS only; requires BlueBubbles server |
+| Signal | signal-cli | Stable | Requires linked device; native daemon or container |
+| iMessage | imsg | Stable | macOS only; official plugin over JSON-RPC (BlueBubbles support was removed) |
 | Google Chat | Chat API | Stable | Workspace admin approval |
-| Microsoft Teams | Bot Framework | Beta | Q2 2026 full release |
+| Microsoft Teams | Bot Framework | Supported | Official plugin; beta in early 2026, now one of the README's headline channels |
 | IRC | irc-framework | Stable | Classic protocol support |
 | Matrix | matrix-js-sdk | Stable | Federated, self-hosted friendly |
 | Mattermost | API | Stable | Self-hosted Slack alternative |
 | LINE | Messaging API | Stable | Popular in Japan/SE Asia |
 | Feishu (Lark) | Open API | Stable | Popular in China |
 | Twitch | TMI.js | Stable | Chat-only |
-| WeChat | -- | Beta | Requires custom bridge |
-| Nostr | -- | Beta | Decentralized protocol |
+| WeChat | openclaw-weixin (external plugin) | Beta | Maintained outside the OpenClaw repo |
+| Nostr | NIP-04 | Beta | Encrypted DMs on a decentralized protocol |
 | WebChat | Built-in | Stable | Browser-based fallback |
+| A2A | A2A 1.0 JSON-RPC (bundled plugin) | Supported | Not a chat app: lets external agents message your OpenClaw agents, so apply the same allowlists you would to a human sender |
 
 ### Unified Context Across Channels
 
@@ -461,11 +438,13 @@ OpenClaw's security model assumes a "personal assistant" threat model: one trust
  ─────────────────────────────────
  Who can message the bot?
  Configured per-channel with allowlists.
+ Unknown DM senders get a pairing code
+ by default, not a response.
 
  Layer 2: Agent Tool Allow/Deny
  ─────────────────────────────────
  Which tools can this agent use?
- Configured per-agent in agents.list[].tools.
+ Configured per-agent in agents.entries.<id>.tools.
 
  Layer 3: Sandbox Tool Policy
  ─────────────────────────────────
@@ -475,40 +454,54 @@ OpenClaw's security model assumes a "personal assistant" threat model: one trust
  Layer 4: Elevated Access
  ─────────────────────────────────
  Some tools require host-level access.
- Gated per-channel and per-user with allowFrom lists.
+ Gated globally and per agent with allowFrom
+ lists; the agent gate can only narrow the
+ global one, and a sender must pass both.
 ```
 
 ### Sandbox Isolation
 
-For non-main sessions (sub-agents, cron jobs, isolated tasks), OpenClaw supports Docker sandbox isolation:
+Sandboxing is **off by default**: tools for the main session run on the host unless you configure it. Turn it on for non-main sessions (sub-agents, cron jobs, isolated tasks) at minimum, or for everything:
 
-```yaml
-# docker-compose.sandbox.yml
-services:
-  openclaw-sandbox:
-    image: openclaw/sandbox:latest
-    network_mode: "none"        # No network access
-    read_only: true             # Read-only root filesystem
-    volumes:
-      - ./workspace:/workspace  # Restricted workspace only
-    security_opt:
-      - no-new-privileges:true
+```json5
+// ~/.openclaw/openclaw.json
+{
+  agents: {
+    defaults: {
+      sandbox: {
+        mode: "non-main",          // "off" (default) | "non-main" | "all"
+        backend: "docker",
+        scope: "session",          // one container per session; "agent" shares one per agent
+        workspaceAccess: "none",   // the agent workspace is not visible inside the sandbox
+        docker: {
+          image: "openclaw-sandbox:bookworm-slim",
+          network: "none",         // no egress
+          readOnlyRoot: true,
+          capDrop: ["ALL"],
+        },
+      },
+    },
+  },
+}
 ```
 
-With `network: "none"`, a sandboxed sub-agent cannot make outbound requests, cannot exfiltrate data, and cannot reach external services -- even if running malicious code.
+With `network: "none"` (the Docker backend's default), a sandboxed sub-agent cannot make outbound requests, cannot exfiltrate data, and cannot reach external services, even if running malicious code. The trade-off is that `non-main` leaves your primary conversation, the one with the most context and the most permissions, on the host.
 
 ### Critical Security Warnings
 
-**Default localhost trust**: By default, OpenClaw trusts connections from localhost without authentication. If the Gateway sits behind an improperly configured reverse proxy that forwards all requests to localhost, external attackers get full access. Always configure authentication for remote deployments.
+**Loopback is the first line of defense**: Host installs bind the Gateway to loopback, so network reachability does much of the security work. If the Gateway sits behind an improperly configured reverse proxy that forwards all requests to localhost, every external caller arrives from loopback, and anything the Gateway grants to local connections it now grants to the internet. Container images bind to an exposed interface and rely on the generated gateway token instead. Always keep gateway authentication on for remote deployments, and remember the project supports one trusted operator per gateway, not mutually hostile tenants.
 
-**Skill supply chain**: The community skills catalog has had incidents with malicious packages. Always review third-party skills before installation. Pin skill versions. Use the sandbox for untrusted skills.
+**Skill supply chain**: The community skills catalog has had incidents with malicious packages. Always review third-party skills before installation. Pin skill versions, and pin them by content, not by ref: Plugin4Shell (AIR Security, September 2026) showed that agents installing a SHA-pinned plugin could resolve to attacker code: a repo owner could create a branch named after the SHA and make it the default, and the agents never verified the commit they actually checked out. The MCP skills extension (`io.modelcontextprotocol/skills`, final September 13, 2026) takes the same view: a SHA-256 file manifest, where any changed, added or removed file revokes approval. Use the sandbox for untrusted skills.
 
 ### Hardening Checklist
 
 ```
+[x] Run `openclaw security audit` after every config change
 [x] Set state directory permissions to 700
 [x] Configure channel allowlists (do not leave open)
-[x] Enable sandbox for sub-agents and cron jobs
+[x] Keep DM pairing on; approve senders explicitly
+[x] Enable sandbox for sub-agents and cron jobs (mode: "non-main" or "all")
+[x] Pin the gateway to the extended-stable release train
 [x] Use environment variables for API keys, never hardcode
 [x] Put Gateway behind authenticated reverse proxy for remote access
 [x] Review all third-party skills before installation
@@ -522,37 +515,35 @@ With `network: "none"`, a sandboxed sub-agent cannot make outbound requests, can
 
 ## Deployment Patterns
 
-### Option 1: Local Development (Fastest Start)
+### Option 1: Local Install (Fastest Start)
 
 ```bash
-# Clone and run
-git clone https://github.com/openclaw/openclaw.git
-cd openclaw
-cp .env.example .env
-# Edit .env: add ANTHROPIC_API_KEY or OPENAI_API_KEY
-
-npm install
-npm start
+# Install the CLI, then let onboarding set up keys, channels and the background service
+npm install -g openclaw@latest --allow-scripts=openclaw
+openclaw onboard --install-daemon
+openclaw gateway status
+openclaw security audit
 ```
 
-**Requirements**: Node.js 20+, 512MB RAM, any OS.
+**Requirements**: Node.js 24.16+ or 26.1+ (Node 26 recommended), 512MB RAM, macOS, Linux or Windows (WSL2 or PowerShell installer).
 
 ### Option 2: Docker (Recommended for Production)
 
+The repo's `./scripts/docker/setup.sh` builds or pulls the image, runs onboarding, and writes a gateway token to `.env`. If you manage compose yourself, a minimal service along the same lines:
+
 ```yaml
 # docker-compose.yml
-version: "3.8"
 services:
-  openclaw:
-    image: openclaw/openclaw:latest
-    container_name: openclaw-gateway
+  openclaw-gateway:
+    image: ghcr.io/openclaw/openclaw:extended-stable  # LTS-style train; :latest tracks stable
+                                                      # releases; -browser variants bundle Chromium
     restart: unless-stopped
     ports:
-      - "18789:18789"
+      - "127.0.0.1:18789:18789"               # keep the port off public interfaces
     volumes:
-      - ./state:/app/state         # Persistent state
-      - ./openclaw.json:/app/openclaw.json  # Configuration
+      - ./openclaw-state:/home/node/.openclaw # Config, state and memory
     environment:
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}  # the image binds to an exposed interface
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
     mem_limit: 2g
@@ -565,12 +556,12 @@ services:
 
 ```bash
 docker compose up -d
-docker logs -f openclaw-gateway  # Watch logs
+docker compose logs -f openclaw-gateway  # Watch logs
 ```
 
 ### Option 3: Cloud VPS (Always-On)
 
-OpenClaw is lightweight -- any machine with 512MB RAM and 1 CPU core is sufficient. A $4-6/month VPS works.
+OpenClaw is lightweight: any machine with 512MB RAM and 1 CPU core is sufficient. A $4-6/month VPS works.
 
 **Quick deploy options:**
 - **DigitalOcean**: 1-Click App with security hardening built in
@@ -613,7 +604,7 @@ OpenClaw is lightweight -- any machine with 512MB RAM and 1 CPU core is sufficie
  │  │  network: none                  │ │
  │  └─────────────────────────────────┘ │
  │                                      │
- │  Volume: ./state (700 permissions)   │
+ │  Volume: ./openclaw-state (700)      │
  └──────────────────────────────────────┘
          │
          ▼
@@ -662,18 +653,20 @@ server {
 
 ### Context Window Management
 
-LLM attention scales quadratically with context length. When context goes from 50K to 100K tokens, the model does four times the work. Practical optimizations:
+Two costs grow with history. Attention compute grows quadratically with context length, which shows up as latency on long prompts. The bill grows too: every turn re-sends the whole conversation, so input tokens per conversation grow roughly with the square of the turn count unless the stable prefix is served from the prompt cache. Practical optimizations:
 
 - **Limit context window**: 100K tokens is enough for most tasks
 - **Start new conversations**: Long history accumulates hundreds of messages; restart periodically
 - **Disable unused skills**: Each loaded skill adds to the context budget
+- **Keep the prefix cacheable**: Put SOUL.md, AGENTS.md and skill descriptions first and keep them stable between turns. Cache reads cost 0.1x input on most Claude models (0.05x on Opus 5.5, 0.025x on Fable 5.1) and 0.1x on OpenAI's GPT-5.6 and GPT-6 models (0.05x on GPT-6.1 Sol), so a warm prefix is close to free and a cold one is billed at full input price
 
 ### Skill Optimization
 
 ```
  DO: Enable only skills you actively use
  DO: Write concise SKILL.md descriptions
- DO: Use specific trigger keywords
+ DO: Say in the description when to use the skill
+ DO: Set a per-agent skill allowlist
 
  DON'T: Enable everything "just in case"
  DON'T: Write verbose skill instructions
@@ -684,10 +677,10 @@ Each enabled skill adds context the agent must evaluate on every turn. If you ha
 
 ### Latency Reduction
 
-1. **Disable verbose thinking**: The `thinkingDefault` setting controls internal reasoning. For real-time interactions, skip chain-of-thought to cut processing time roughly in half
+1. **Reduce thinking**: The `thinkingDefault` setting controls internal reasoning. For real-time interactions, skipping chain-of-thought cuts response time substantially. The newest Claude models no longer let you switch it off (Opus 5.5 always thinks; Sonnet 5.5's lowest setting is `between_tools`, and `disabled` returns HTTP 400), so lower the effort level instead or route latency-sensitive agents to a model that allows it
 2. **Use faster models**: Route simple tasks (reminders, lookups) to smaller models
 3. **Co-locate providers**: Use an LLM provider and region close to your server
-4. **Monitor with Docker**: `docker stats openclaw-gateway` for real-time resource usage
+4. **Monitor with Docker**: `docker stats` on the gateway container for real-time resource usage
 
 ---
 
@@ -717,11 +710,11 @@ Developer (phone)
 
 ### 2. Email Triage at Scale
 
-One developer used the himalaya CLI integration to give OpenClaw access to an email account with 15,000 messages. The agent processed the backlog -- unsubscribing from spam, categorizing by urgency, and drafting replies for review.
+One developer used the himalaya CLI integration to give OpenClaw access to an email account with 15,000 messages. The agent processed the backlog: unsubscribing from spam, categorizing by urgency, and drafting replies for review.
 
 ### 3. Home Automation Hub
 
-An agent named "Claudette" controls an entire house through Home Assistant, using the ha-mcp skill to access all Home Assistant entities. It controls Philips Hue lights, Elgato devices, and adjusts boiler settings based on weather forecasts -- all via WhatsApp commands.
+An agent named "Claudette" controls an entire house through Home Assistant, using the ha-mcp skill to access all Home Assistant entities. It controls Philips Hue lights, Elgato devices, and adjusts boiler settings based on weather forecasts, all via WhatsApp commands.
 
 ### 4. Content Production Pipeline
 
@@ -749,7 +742,7 @@ When a new client signs on, an agent kicks off a full workflow: creates a projec
 
 **Configuration complexity**: Running OpenClaw well involves managing environments, permissions, tool connectors, and execution sandboxes. Many users report spending more time configuring than using the system.
 
-**Memory fragility**: In-session chat history is temporary and lost on Gateway restart. Workspace files persist only what was explicitly saved. If a conversation never saved to memory files, there is nothing to retrieve later.
+**Memory fragility**: Session history now lives in a per-agent SQLite store and survives Gateway restarts, but the model only remembers across sessions what was written to the workspace memory files. A fresh `/new` session loads `MEMORY.md` plus today's and yesterday's daily notes; anything else has to be found by memory search, and a `MEMORY.md` that outgrows the bootstrap budget stays intact on disk but is truncated in the copy injected into context. The default background "dreaming" sweep that distills daily notes into `MEMORY.md` is convenient, and it is also a write path into every future prompt, so a poisoned note can persist.
 
 **Resource consumption**: The container can use 2GB+ of RAM with many skills loaded. Long conversation history compounds this.
 
@@ -768,38 +761,34 @@ When a new client signs on, an agent kicks off a full workflow: creates a projec
 
 ---
 
-## The April 2026 Anthropic Block-and-Reverse Incident
+## The 2026 Anthropic Subscription-Policy Incident
 
-OpenClaw's reliance on Claude Pro and Claude Max subscriptions to power agent work was, until April 2026, treated as a cost-control feature: users could run OpenClaw against their existing personal Claude plan instead of paying API rates. On April 4, 2026, Anthropic changed the policy. A new enforcement clause blocked third-party agent frameworks from acting as a programmatic intermediary for Pro and Max subscriptions. Within hours, OpenClaw instances pointed at Pro and Max accounts began returning errors. Roughly 135,000 active OpenClaw deployments were affected, and a sizeable fraction of those users moved to direct API billing at rates 5x or more above their previous effective cost. Community frustration trended on Hacker News and X for nearly two weeks.
+OpenClaw's reliance on Claude Pro and Claude Max subscriptions to power agent work was, until April 2026, treated as a cost-control feature: users could run OpenClaw against their existing personal Claude plan instead of paying API rates. Starting April 4, 2026, Anthropic stopped letting subscription usage limits cover third-party harnesses such as OpenClaw. That usage could continue only as pay-as-you-go extra usage billed at API rates, and Anthropic tied the change to capacity, pointing at third-party tools that bypassed prompt caching. For heavy agent workloads the effective price jumped several-fold: press estimates put the subscription discount for that kind of usage at 5x or more against API rates.
 
-Anthropic reversed the policy mid-April with a new product called Agent SDK Credit, a metered allowance bundled into Pro and Max plans (with a higher allowance for Max) explicitly authorized for programmatic agent use through the Anthropic Agent SDK. Frameworks integrating with the Agent SDK, including OpenClaw, can again drive a personal subscription, but now within a transparent quota and only over the Agent SDK path. Direct Claude.ai web-session scraping remains forbidden.
+The promised reversal is still unsettled. On May 13, Anthropic announced a monthly Agent SDK credit, due June 15, for programmatic use: $20 on Pro, $100 on Max 5x and $200 on Max 20x, covering the Agent SDK, `claude -p`, Claude Code GitHub Actions and third-party apps that authenticate through the Agent SDK, with usage beyond the credit billed at API rates only when extra usage is enabled. On June 15, the day it was due, Anthropic paused the plan. Its help center, last updated June 16, says Agent SDK, `claude -p` and third-party app usage still draw from the subscription's usage limits. OpenClaw's own Anthropic provider docs say the credit is unavailable while Anthropic revises it. In practice OpenClaw reaches a Pro or Max plan through Claude Code's own credentials, either the Claude CLI backend or a `claude setup-token` token, and that usage draws on the plan's limits; for shared production automation, OpenClaw's docs recommend an Anthropic API key with pay-as-you-go billing.
 
 ### Timeline of the Incident
 
 ```mermaid
 gantt
-    title April 2026 Anthropic OpenClaw incident
+    title Anthropic subscription policy and OpenClaw in 2026
     dateFormat  YYYY-MM-DD
     axisFormat  %b %d
     section Policy actions
-    Block on Pro Max programmatic use      :done, a1, 2026-04-04, 1d
-    Community backlash and migration       :active, a2, 2026-04-05, 13d
-    Agent SDK Credit announcement          :crit, a3, 2026-04-18, 1d
-    Agent SDK Credit GA rollout            :a4, 2026-04-21, 9d
-    section User behavior
-    Mass move to direct API billing        :b1, 2026-04-05, 13d
-    Self-host and multi-provider migration :b2, 2026-04-07, 25d
+    Subscriptions stop covering third-party harnesses :milestone, a1, 2026-04-04, 0d
+    Agent SDK credit announced                        :milestone, a2, 2026-05-13, 0d
+    Credit plan paused on its start date              :milestone, a3, 2026-06-15, 0d
 ```
 
 ### What It Means Architecturally
 
 The incident was not a security event. It was a product-policy event with security and reliability consequences. Three lessons follow:
 
-**Provider policy is part of your architecture.** A single line in a vendor's Acceptable Use enforcement is functionally identical, from an availability standpoint, to a service outage that lasts however long the policy stays in force. If your agent platform's economics depend on a specific provider plan, the provider's policy team is on your critical path. Treat their Terms of Service as a runtime dependency, not a legal artifact.
+**Provider policy is part of your architecture.** Within ten weeks, Anthropic changed what subscriptions cover for third-party harnesses, announced a replacement scheme, and paused that scheme on its start date. If your agent platform's economics depend on a specific provider plan, a change to what that plan covers is a price shock overnight, and requests simply stop if no fallback billing is enabled. The provider's policy team is on your critical path. Treat their Terms of Service as a runtime dependency, not a legal artifact.
 
-**Multi-provider abstraction is operational hygiene, not optimization.** OpenClaw users who had configured both Anthropic and OpenAI providers, with model routing rules per agent, kept working through the block at degraded quality. Users who had hard-coded a single provider in every agent definition were dead in the water. The abstraction layer is cheap to build and the failure mode it covers is real.
+**Multi-provider abstraction is operational hygiene, not optimization.** OpenClaw users with a second provider configured per agent could reroute when the Claude economics changed. Users who had hard-coded a single provider in every agent definition could only pay the new rate or stop. The abstraction layer is cheap to build and the failure mode it covers is real. Ordinary outages make the same point: Anthropic logged at least 12 major or critical incidents between August 16 and September 29, 2026, and OpenAI had an outage of about 5 hours 20 minutes across the API, ChatGPT and Codex on September 29. A fallback that stays inside one vendor does not cover either.
 
-**Self-host backstops matter for personal-data agents.** A meaningful subset of OpenClaw deployments switched their default agent over to a local Ollama model (Llama 3.3 70B was the most common choice) for two weeks, accepting lower quality for guaranteed availability. The lesson is not that local models are competitive with frontier models; it is that having a working fallback path, even at degraded quality, is part of a serious deployment.
+**Self-host backstops matter for personal-data agents.** Keep at least one fallback path that no vendor's plan terms can switch off, such as a local model served through Ollama or vLLM, and accept lower quality on that path in exchange for availability. The lesson is not that local models are competitive with frontier models; it is that having a working fallback path, even at degraded quality, is part of a serious deployment.
 
 ### Vendor-Risk Checklist
 
@@ -812,7 +801,9 @@ The incident was not a security event. It was a product-policy event with securi
 
 **Sources:**
 - [Axios: Anthropic blocks OpenClaw third-party agents](https://www.axios.com/2026/04/06/anthropic-openclaw-subscription-openai)
-- [VentureBeat: OpenClaw reversal with Agent SDK credit](https://venturebeat.com/technology/anthropic-reinstates-openclaw-and-third-party-agent-usage-on-claude-subscriptions-with-a-catch)
+- [VentureBeat: Agent SDK credit announcement (May 13, 2026)](https://venturebeat.com/technology/anthropic-reinstates-openclaw-and-third-party-agent-usage-on-claude-subscriptions-with-a-catch)
+- [Claude Help Center: Use the Claude Agent SDK with your Claude plan (pause notice, June 15, 2026)](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
+- [OpenClaw docs: Anthropic provider](https://docs.openclaw.ai/providers/anthropic)
 
 ---
 
@@ -821,15 +812,15 @@ The incident was not a security event. It was a product-policy event with securi
 | Feature | OpenClaw | Hermes Agent | Claude Code | Open Interpreter |
 |---------|----------|-------------|-------------|-----------------|
 | **Primary interface** | Messaging apps | Messaging apps | Terminal/CLI | Terminal/CLI |
-| **Architecture** | Gateway + Channel Adapters | Learning loop + Skill memory | Agentic CLI | Simple REPL |
-| **LLM support** | Any (Claude, GPT, Gemini, local) | Any | Claude only | Any |
-| **Messaging platforms** | 20+ (WhatsApp, Telegram, Slack, etc.) | 6 (Telegram, Discord, Slack, WhatsApp, Signal, email) | None (terminal only) | None (terminal only) |
-| **Memory** | Cross-session per assistant | Multi-level (session, persistent, skill) | Session only (CLAUDE.md for context) | Session only |
-| **Skills/Plugins** | 100+ bundled, community ecosystem | Self-learning skill system | MCP tools | Limited plugins |
-| **Self-hosted** | Yes (required) | Yes (required) | No (Anthropic-hosted) | Yes |
-| **GitHub stars** | 250K+ | 22K+ | N/A (closed source) | 55K+ |
-| **Best for** | Multi-channel personal AI assistant | Personal agent that learns over time | Software development | Quick local automation |
-| **Weakest at** | Predictability, enterprise use | Platform reach | Non-coding tasks | Complex workflows |
+| **Architecture** | Gateway + Channel Adapters | Learning loop + Skill memory | Agentic CLI | Codex-derived harness (Rust rewrite, July 2026); the original Python REPL lives on as a community fork |
+| **LLM support** | Any (Claude, GPT, Gemini, local) | Any | Claude only | Any; tuned for low-cost open models |
+| **Messaging platforms** | 20+ (WhatsApp, Telegram, Slack, etc.) | 6 (Telegram, Discord, Slack, WhatsApp, Signal, email) plus the CLI, from one gateway process | Terminal first; Telegram, Discord and iMessage through channels (research preview), and Slack through Claude in Slack | None (terminal only) |
+| **Memory** | Cross-session per assistant | Multi-level (session, persistent, skill) | CLAUDE.md you write plus auto memory Claude writes per repository (on by default in local sessions) | Session only |
+| **Skills/Plugins** | ~50 bundled plus plugin-shipped skills; ClawHub registry | Self-learning skill system | MCP tools, skills, plugins | Skills (for example a QA skill for browser and app testing) |
+| **Self-hosted** | Yes (required) | Yes (required) | Runs locally; models hosted by Anthropic or a cloud provider; self-hosted runners for Team and Enterprise | Yes |
+| **GitHub stars (Oct 2026)** | ~391K | ~251K | ~149K (issues and plugins repo; not open source) | ~68K |
+| **Best for** | Multi-channel personal AI assistant | Personal agent that learns over time | Software development | Coding with low-cost models |
+| **Weakest at** | Predictability, enterprise use | Platform reach | Non-coding tasks | Maturity (a months-old rewrite) |
 
 ### Choosing the Right Tool
 
@@ -837,8 +828,10 @@ The incident was not a security event. It was a product-policy event with securi
 Need multi-channel messaging?          --> OpenClaw
 Need an agent that learns from usage?  --> Hermes Agent
 Need autonomous coding specifically?   --> Claude Code
-Need quick one-off local automation?   --> Open Interpreter
-Need enterprise-grade reliability?     --> Custom solution or commercial platform
+Need a coding agent on cheap models?   --> Open Interpreter (Rust rewrite)
+Need always-on without running infra?  --> Managed persistent agents (OpenAI dots, Meta Muse)
+Need enterprise-grade reliability?     --> Custom solution or managed harness (Claude Managed Agents,
+                                           OpenAI Agents API, Bedrock Managed Agents)
 ```
 
 ---
@@ -852,56 +845,58 @@ Need enterprise-grade reliability?     --> Custom solution or commercial platfor
 git clone https://github.com/openclaw/openclaw.git
 cd openclaw
 
-# 2. Copy and edit environment file
-cp .env.example .env
-# Add your LLM API key:
-# ANTHROPIC_API_KEY=sk-ant-...
-# or OPENAI_API_KEY=sk-...
+# 2. Use the prebuilt image (skip to build locally as openclaw:local)
+export OPENCLAW_IMAGE="ghcr.io/openclaw/openclaw:latest"
 
-# 3. Start with Docker
-docker compose up -d
+# 3. Run setup: onboarding prompts for your LLM API key,
+#    and a gateway token is generated and written to .env
+./scripts/docker/setup.sh
 
 # 4. Check logs
-docker logs -f openclaw-gateway
+docker compose logs -f openclaw-gateway
 ```
 
 ### Connect Your First Channel (Telegram)
 
 Telegram is the easiest channel to set up:
 
+```bash
+# Fastest path: the CLI writes the token into your config
+# (with the Docker setup, run CLI commands as: docker compose run --rm openclaw-cli <command>)
+openclaw channels add --channel telegram --token <bot-token-from-BotFather>
+```
+
+Or by hand:
+
 ```json5
 // ~/.openclaw/openclaw.json
 {
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "token": "${TELEGRAM_BOT_TOKEN}",  // From @BotFather
-      "allowedUsers": ["your_telegram_id"]
-    }
+  channels: {
+    telegram: {
+      enabled: true,
+      botToken: "${TELEGRAM_BOT_TOKEN}",  // From @BotFather
+      dmPolicy: "pairing",                // unknown senders get a pairing code, not a reply
+    },
   },
-  "models": {
-    "providers": {
-      "anthropic": {
-        "apiKey": "${ANTHROPIC_API_KEY}"
-      }
-    }
+  agents: {
+    defaults: {
+      model: "anthropic/claude-sonnet-5-5",  // key comes from ANTHROPIC_API_KEY or onboarding
+    },
   },
-  "agents": {
-    "defaults": {
-      "model": "anthropic/claude-sonnet-4"
-    }
-  }
 }
 ```
+
+Then message the bot once and approve yourself: `openclaw pairing list telegram`, then `openclaw pairing approve telegram <CODE>` (codes expire after an hour). For a locked-down bot, use `dmPolicy: "allowlist"` with `allowFrom: ["tg:<your-user-id>"]` instead.
 
 ### Install Your First Skill
 
 ```bash
-# Install a community skill
-cd ~/.openclaw/skills
-git clone https://github.com/example/weather-skill.git weather
+# Install a community skill from ClawHub (read its SKILL.md and scripts first)
+openclaw skills install @owner/weather
+openclaw skills update --all
 
 # Or create your own (see AgentSkills section above)
+cd ~/.openclaw/skills
 mkdir my-skill && cat > my-skill/SKILL.md << 'EOF'
 ---
 name: my-first-skill
@@ -914,13 +909,16 @@ EOF
 ### Verify Everything Works
 
 ```bash
-# Check Gateway health
-curl http://localhost:18789/health
+# Open the Control UI at http://127.0.0.1:18789/ and sign in with the token from .env
+# (npm installs: `openclaw gateway status` and `openclaw dashboard`)
 
 # Check logs for errors
-docker logs openclaw-gateway --tail 50
+docker compose logs openclaw-gateway --tail 50
 
-# Send a test message via Telegram to your bot
+# Confirm the channel is live
+openclaw channels status --probe
+
+# After pairing, send a test message via Telegram to your bot
 # It should respond within 2-5 seconds
 ```
 
@@ -1011,9 +1009,9 @@ Each messaging platform has unique constraints (message size limits, media suppo
 
 The defense-in-depth approach: (a) Agent-level tool allowlists define what tools an agent can theoretically use. (b) Sandbox-level policy separately gates what tools can actually execute. (c) Elevated access requires per-user, per-channel authorization. (d) Docker isolation for sub-agents ensures that even if a malicious prompt tricks the model, the blast radius is contained.
 
-**4. How to manage memory without a vector database?**
+**4. How to manage memory without a vector database service?**
 
-OpenClaw uses a simple file-based memory system (markdown files in the state directory) rather than a vector database. For a single-user agent, full-text search over a few hundred memory files is fast enough. This avoids the operational burden of running and maintaining a vector DB.
+OpenClaw keeps memory as plain Markdown files in the agent workspace (`MEMORY.md` for curated facts, `memory/YYYY-MM-DD.md` for daily notes), and those files are the source of truth. The default memory engine indexes them in an embedded SQLite store with keyword, vector and hybrid search, so there is no separate vector database to run; LanceDB and Honcho backends are optional plugins. For a single-user agent, a few hundred files fit comfortably in an embedded index. The design point for an interview: humans can read, diff and fix the memory, and the index is rebuildable from it.
 
 **5. How to handle multi-channel session continuity?**
 
@@ -1030,32 +1028,36 @@ All channels route through the same Router, which maps platform-specific user ID
 
 The architectural jump from "personal assistant" to "multi-tenant platform" is significant. OpenClaw intentionally does not cross this boundary, which is both a strength (simplicity) and a limitation (does not scale to a SaaS product without major rearchitecting).
 
+The hosted products that launched in September 2026 show what the far end of that table looks like. OpenAI dots, Meta Muse and Microsoft Copilot Autopilot each give every agent its own VM (or a computer inside the customer tenant) plus its own identity, and they replace per-message approval with declarative rules: dots, for example, can allow, block or require approval per action, auto-reviews anything that touches accounts or shares information, and drops to read-only research when no task is active. Credentials live in a vault the model never reads. In an interview, contrast this with OpenClaw's single-process, single-operator design: the jump to 100K users is not a scaling exercise on the Gateway, it is a change in the trust model.
+
 ### Follow-up Questions an Interviewer Might Ask
 
 **Q: How would you add a vector database for long-term memory?**
-Add a RAG pipeline: when the agent saves a memory, embed it and store in a vector DB (Qdrant, Weaviate). On each turn, retrieve the top-K relevant memories and inject them into the context. This trades storage complexity for better long-term recall without ballooning the context window.
+For one user, you mostly do not need to: an embedded index (OpenClaw's SQLite engine does hybrid search) is enough. At platform scale, add a RAG pipeline: when the agent saves a memory, embed it and store it in a vector DB (Qdrant, Weaviate) partitioned per tenant; on each turn, retrieve the top-K relevant memories and inject them into the context. Two cautions. Keep the human-readable files as the source of truth so the index can be rebuilt after an embedding-model change. And measure whether retrieval helps at all: MemTrapBench (arXiv 2608.20202, August 2026, a work-in-progress preprint) builds tasks where faithfully stored, relevant memories distort reasoning, and on those every memory strategy it tested (two model families, five frameworks) underperformed using no memory. Gate memory writes and evaluate recall against a no-memory baseline.
 
 **Q: How would you make this multi-tenant?**
 Isolate at the container level: each tenant gets their own Gateway container with separate storage volumes, network namespace, and API key configuration. Use Kubernetes with per-tenant namespaces. Add a routing layer in front that maps tenant domains to containers.
 
 **Q: How would you handle rate limiting to control LLM costs?**
-Three levels: (a) per-user message rate limiting at the Gateway, (b) per-agent token budget tracked in the orchestrator, (c) model routing that sends simple queries to cheaper models. Alert the user when they approach their budget, and allow configurable daily/monthly caps.
+Three levels: (a) per-user message rate limiting at the Gateway, (b) per-agent token budget tracked in the orchestrator, (c) model routing that sends simple queries to cheaper models. Alert the user when they approach their budget, and allow configurable daily/monthly caps. Make the cap pause the agent rather than just alert (Claude Managed Agents' session budgets stop with `budget_reached`), and budget against cache-miss list prices, since a cold prompt cache can multiply the bill for a long-history agent.
 
 ---
 
 ## References
 
-- OpenClaw Official Documentation -- https://docs.openclaw.ai
-- OpenClaw GitHub Repository -- https://github.com/openclaw/openclaw
-- OpenClaw Wikipedia -- https://en.wikipedia.org/wiki/OpenClaw
-- OpenClaw Skills Documentation -- https://docs.openclaw.ai/tools/skills
-- OpenClaw Security Architecture -- https://docs.openclaw.ai/gateway/security
-- OpenClaw Configuration Reference -- https://docs.openclaw.ai/gateway/configuration
-- OpenClaw Multi-Agent Routing -- https://docs.openclaw.ai/concepts/multi-agent
-- Milvus Blog: Complete Guide to OpenClaw -- https://milvus.io/blog/openclaw-formerly-clawdbot-moltbot-explained-a-complete-guide-to-the-autonomous-ai-agent.md
-- DigitalOcean: What is OpenClaw -- https://www.digitalocean.com/resources/articles/what-is-openclaw
-- awesome-openclaw-agents (Community Skills) -- https://github.com/mergisi/awesome-openclaw-agents
+- OpenClaw Official Documentation: https://docs.openclaw.ai
+- OpenClaw GitHub Repository and releases: https://github.com/openclaw/openclaw
+- OpenClaw Wikipedia: https://en.wikipedia.org/wiki/OpenClaw
+- OpenClaw Skills Documentation: https://docs.openclaw.ai/tools/skills
+- OpenClaw Security Architecture: https://docs.openclaw.ai/gateway/security
+- OpenClaw Configuration Reference: https://docs.openclaw.ai/gateway/configuration
+- OpenClaw Multi-Agent Routing: https://docs.openclaw.ai/concepts/multi-agent
+- OpenClaw Sandboxing: https://docs.openclaw.ai/gateway/sandboxing
+- OpenClaw Docker Install: https://docs.openclaw.ai/install/docker
+- Milvus Blog: Complete Guide to OpenClaw: https://milvus.io/blog/openclaw-formerly-clawdbot-moltbot-explained-a-complete-guide-to-the-autonomous-ai-agent.md
+- DigitalOcean: What is OpenClaw: https://www.digitalocean.com/resources/articles/what-is-openclaw
+- awesome-openclaw-agents (Community Skills): https://github.com/mergisi/awesome-openclaw-agents
 
 ---
 
-*Next: See [Claude Code Deep Dive](../09-frameworks-and-tools/09-claude-code.md) for comparison with Anthropic's coding-focused agent approach.*
+*Next: [Computer-Use Agents](04-computer-use-agents.md). See also the [Claude Code Deep Dive](../09-frameworks-and-tools/09-claude-code.md) for comparison with Anthropic's coding-focused agent approach.*

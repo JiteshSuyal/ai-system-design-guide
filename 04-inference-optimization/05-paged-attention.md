@@ -4,10 +4,10 @@ PagedAttention is the foundational algorithm behind high-throughput serving engi
 
 ## Table of Contents
 
-- [The Contiguous Memory Problem](#contiguous-memory)
-- [How PagedAttention Works](#how-it-works)
-- [Managing Virtual Memory (Block Manager)](#block-manager)
-- [KV Cache Sharing (Copy-on-Write)](#sharing)
+- [The Contiguous Memory Problem](#the-contiguous-memory-problem)
+- [How PagedAttention Works](#how-pagedattention-works-vllm)
+- [Managing Virtual Memory (Block Manager)](#managing-virtual-memory-block-manager)
+- [KV Cache Sharing (Copy-on-Write)](#kv-cache-sharing-copy-on-write)
 - [Interview Questions](#interview-questions)
 - [References](#references)
 
@@ -41,7 +41,8 @@ PagedAttention draws inspiration from Virtual Memory in Operating Systems.
 Serving frameworks (vLLM, SGLang) act as "mini-OSs" for GPUs.
 
 - **Allocation**: When a new request starts, the Block Manager assigns it a set of empty physical blocks.
-- **Eviction**: If VRAM is full, the manager can "swap" inactive KV blocks to CPU RAM and bring them back when needed (Paged Swap).
+- **Preemption**: If VRAM is full, the scheduler preempts lower-priority requests and frees their blocks, rebuilding the KV later by recomputation or by reloading it from a slower tier.
+- **Tiered offload**: Blocks no longer have to die when evicted from HBM. vLLM's tiered KV offloading copies blocks to pinned host DRAM and from there to disk, object storage, or peer nodes; SGLang's HiCache does the same across GPU, host memory, and storage backends. The block table is what makes this cheap: a block is a fixed-size unit that can be moved, hashed, and shared. See [KV Cache and Context Caching](02-kv-cache-and-context-caching.md#context-caching-self-hosted).
 
 ---
 
@@ -53,6 +54,10 @@ PagedAttention enables effortless sharing of "Common Prefixes."
 - **Traditional**: Store that 5,000-token KV cache 100 times (**500k tokens** in VRAM).
 - **PagedAttention**: Store it **once** via the Block Table and have all 100 users point to the same physical blocks.
 - **Copy-on-Write**: If a user generates a unique token, a new block is created just for them, while the shared blocks remain unchanged.
+
+**How engines find shared prefixes.** vLLM's automatic prefix caching hashes each full block together with the hash of everything before it, so identical prefixes map to identical block hashes; SGLang's RadixAttention keeps the same information in a radix tree. Two production details:
+- **Hashes must be deterministic across nodes** for distributed KV sharing to hit. vLLM v0.29.0 made its prefix-cache root hash deterministic, so you no longer need to pin `PYTHONHASHSEED` across replicas.
+- **Sharing must respect tenancy.** A shared block is also a timing side channel; engines mix a per-tenant `cache_salt` into the hash, and every API path has to apply it.
 
 ---
 
@@ -66,13 +71,14 @@ PagedAttention increases throughput by allowing for much larger **batch sizes**.
 ### Q: Explain the "Block Table" in the context of vLLM.
 
 **Strong answer:**
-The Block Table is a mapping structure that bridges the Gap between the model's expectation of contiguous data and the physical reality of scattered memory. Each entry in the table corresponds to a "Logical Block" of tokens. It stores the physical address of the GPU memory where that block's key and value tensors are stored. This allows the framework to dynamically allocate and free memory in small chunks, enabling advanced features like prefix sharing and efficient multi-threading.
+The Block Table is a mapping structure that bridges the gap between the model's expectation of contiguous data and the physical reality of scattered memory. Each entry in the table corresponds to a "Logical Block" of tokens. It stores the physical address of the GPU memory where that block's key and value tensors are stored. This allows the framework to dynamically allocate and free memory in small chunks, enabling prefix sharing with copy-on-write, preemption without fragmentation, and offloading blocks to host memory or disk and bringing them back.
 
 ---
 
 ## References
 - Kwon et al. "Efficient Memory Management for Large Language Model Serving with PagedAttention" (SOSP 2023)
 - vLLM Documentation. "PagedAttention Logic" (2024)
+- Zheng et al. "SGLang: Efficient Execution of Structured Language Model Programs" (RadixAttention, 2024)
 
 ---
 

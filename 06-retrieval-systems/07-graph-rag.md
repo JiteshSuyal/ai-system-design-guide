@@ -5,12 +5,12 @@ GraphRAG is the combination of **Knowledge Graphs (KG)** and **Retrieval-Augment
 ## Table of Contents
 
 - [When GraphRAG Actually Wins (and When It Doesn't)](#when-graphrag-actually-wins-and-when-it-doesnt)
-- [Graph as Reranker Pattern (May 2026)](#graph-as-reranker-pattern-may-2026)
-- [The Limitations of Vector RAG](#limitations)
-- [GraphRAG Architecture (Extract-Build-Query)](#architecture)
-- [Community Summarization (Microsoft Pattern)](#communities)
-- [Entity-Relationship Retrieval](#retrieval)
-- [When to Use GraphRAG](#when)
+- [Graph as Reranker Pattern](#graph-as-reranker-pattern)
+- [The Limitations of Vector RAG](#the-limitations-of-vector-rag)
+- [GraphRAG Architecture (Extract-Build-Query)](#graphrag-architecture)
+- [Community Summarization (Microsoft Pattern)](#community-summarization)
+- [Entity-Relationship Retrieval](#entity-relationship-retrieval)
+- [When to Use GraphRAG](#when-to-use-graphrag)
 - [Interview Questions](#interview-questions)
 - [References](#references)
 
@@ -61,11 +61,13 @@ flowchart TD
 
 GraphRAG's hidden cost is not extraction; it is maintenance. The corpus drifts: new documents arrive, entities change names, relationships get rewritten. A graph built in January is meaningfully wrong by April. Plan for a quarterly refresh that re-runs extraction on changed documents and reconciles entity identity across the diff. Budget the LLM cost and the engineering time for this refresh up front, or do not build the graph. Teams that skip this step end up with a graph that retrieves confidently and wrongly, which is worse than no graph at all.
 
+The operational cost of a separate graph store is real enough that a leading agent-memory library walked away from it: Mem0 v2.0.0 (April 2026) removed about 4,000 lines of Neo4j, Memgraph, Kuzu and Apache AGE driver code and now keeps entity links in a parallel collection inside the existing vector store, fused into one score with semantic and BM25 signals. If your "graph" is mostly entity co-occurrence for boosting, an entity collection next to your vectors may be all you need; reserve a real graph database for multi-hop traversal over typed relationships.
+
 ---
 
-## Graph as Reranker Pattern (May 2026)
+## Graph as Reranker Pattern
 
-The dominant production pattern in 2026 is not full GraphRAG. It is graph-as-reranker, which delivers most of the multi-hop benefit at a fraction of the construction cost. The intuition is that you do not need a graph index over the entire corpus; you need a graph that covers the entities that show up in the top-k vector results, expanded just enough to find connected evidence.
+Full GraphRAG is rarely the right first build. The cheaper hybrid is graph-as-reranker, which aims for most of the multi-hop benefit at a fraction of the construction cost. The intuition is that you do not need a graph index over the entire corpus; you need a graph that covers the entities that show up in the top-k vector results, expanded just enough to find connected evidence.
 
 The flow is:
 
@@ -75,7 +77,7 @@ The flow is:
 4. The expanded candidate set (original 50 plus graph-expanded chunks) goes to a cross-encoder reranker.
 5. The top-k reranked chunks feed the generator.
 
-You build only the slice of graph that the query touches, lazily, rather than a global graph index. Construction cost drops by an order of magnitude. The maintenance tail shrinks because you are not re-indexing untouched regions. Empirically, teams report 70-80% of full GraphRAG's quality lift at roughly 20% of the upfront cost.
+You build only the slice of graph that the query touches, lazily, rather than a global graph index. Construction cost drops by an order of magnitude. The maintenance tail shrinks because you are not re-indexing untouched regions. Practitioner reports (not a controlled benchmark) put it at roughly 70-80% of full GraphRAG's quality lift for about 20% of the upfront cost; measure it on your own failure set.
 
 ### Pattern Flow
 
@@ -107,9 +109,11 @@ A short tour of the variants worth knowing:
 - **HippoRAG and HippoRAG 2** (Princeton, 2024 and 2025): treat retrieval as a Personalized PageRank problem over a memory graph, with strong results on multi-hop benchmarks at lower index cost than Microsoft GraphRAG.
 - **LightRAG** (HKU, 2024): entity-centric retrieval with a simpler indexing pipeline; trades some recall on global questions for substantially faster construction and updates.
 - **GraLC-RAG** (March 2026): graph-aware late chunking paired with UMLS grounding for biomedical use cases, strong published result on multi-hop biomedical QA.
-- **Microsoft GraphRAG indexing pipeline v2** (2025): the original community-summarization approach, rearchitected for incremental updates and significantly cheaper extraction; this is what to use if you genuinely need global summarization rather than local multi-hop.
+- **Microsoft GraphRAG** (2.x in 2025, 3.x in 2026): the original community-summarization approach, rearchitected for incremental updates and significantly cheaper extraction; this is what to use if you genuinely need global summarization rather than local multi-hop. The 3.x line (3.0.0 in January 2026 was a monorepo restructure; 3.2.0 in September 2026 added a concurrency-safe SQLite cache) is maintenance, not a new method.
 
 The general direction across all four variants is the same: less monolithic indexing, more incremental and lazy graph construction, and a clearer separation between "global summary" workloads (where Microsoft-style communities still win) and "local multi-hop" workloads (where HippoRAG-style traversal is cheaper and competitive).
+
+A related 2026 product category compiles the corpus once into structured artifacts (summaries, extracts, entity-relationship graphs) that agents query directly, rather than retrieving chunks per query. Pinecone Nexus (GA August 6, 2026) is the clearest example; see [Agentic RAG](08-agentic-rag.md#compile-once-knowledge) for the tradeoffs.
 
 **Sources:**
 - [Microsoft GraphRAG](https://microsoft.github.io/graphrag)
@@ -134,7 +138,7 @@ Vector RAG operates on "points" in space. This fails for questions like:
 
 A modern GraphRAG pipeline consists of three phases:
 
-1. **Extraction (VLB)**: An LLM scans the text and extracts **Entities** (People, Projects, Dates) and **Relationships** (e.g., "Person A *works on* Project B").
+1. **Extraction**: An LLM scans the text and extracts **Entities** (People, Projects, Dates) and **Relationships** (e.g., "Person A *works on* Project B").
 2. **Graph Construction**: The entities are stored as nodes and relationships as edges in a Graph Database (Neo4j, Memgraph).
 3. **Querying**: 
    - **Local Search**: Find a node and its neighbors.
@@ -144,7 +148,7 @@ A modern GraphRAG pipeline consists of three phases:
 
 ## Community Summarization
 
- popularized by Microsoft, this technique involves:
+Popularized by Microsoft, this technique involves:
 1. Identifying clusters of related nodes (Communities) using graph algorithms (e.g., Leiden).
 2. Generating a natural language summary for *each* community.
 3. At query time, searching the **summaries** instead of the raw chunks.
@@ -170,7 +174,7 @@ Production stacks use **Hybrid Graph-Vector Search**.
 | **Scale** | Petabytes | Millions of entities |
 | **Cost** | Low | High (Extraction is expensive) |
 
-**2025 Recommendation**: Use GraphRAG for **Internal Knowledge Bases** (Wikis, Codebases, Legal repositories) where the connections between documents are as important as the content itself.
+**Recommendation**: Use GraphRAG for **Internal Knowledge Bases** (Wikis, Codebases, Legal repositories) where the connections between documents are as important as the content itself.
 
 ---
 
@@ -179,7 +183,7 @@ Production stacks use **Hybrid Graph-Vector Search**.
 ### Q: Why is the "Extraction" phase the bottleneck for GraphRAG?
 
 **Strong answer:**
-Knowledge Graph extraction is extremely token-intensive. To build a high-quality graph, you must process every document with a "Frontier" model to ensure you don't miss subtle entity connections. For a 10,000-page dataset, this can cost thousands of dollars in LLM API calls. The standard mitigation is **SLM-based Extraction** (Small Language Models) for the initial pass, with giant models reserved for "conflict resolution" between overlapping entities. Microsoft's LazyGraphRAG further delays community-summarization cost by deferring it until query time.
+Knowledge Graph extraction is token-intensive: every chunk goes through an LLM, usually more than once (extraction plus "gleaning" passes to catch missed entities), and the output is large structured JSON. Token prices have fallen far enough that the raw API bill is rarely the blocker. A 10,000-page corpus is roughly 6M input tokens; one pass with GPT-6 Luna ($0.10 / $0.50 per 1M) costs a few dollars, while a frontier reasoning model such as Claude Opus 5.5 ($4 / $20, with thinking billed as output) lands in the low hundreds once you count output and repeat passes. The real bottlenecks are throughput (rate limits when you re-extract a large corpus), entity resolution quality, and re-extraction every time the corpus changes. The standard mitigation is **SLM-based Extraction** (Small Language Models) for the initial pass, with larger models reserved for "conflict resolution" between overlapping entities. Microsoft's LazyGraphRAG further delays community-summarization cost by deferring it until query time.
 
 ### Q: How does GraphRAG solve the "Context Window" limit for aggregate questions?
 
@@ -195,4 +199,4 @@ For aggregate questions (e.g., "Summarize the sentiment of 1,000 documents"), a 
 
 ---
 
-*Next: [Agentic RAG](08-agentic-rag.md)*
+*Previous: [Reranking Strategies](06-reranking-strategies.md) | Next: [Agentic RAG](08-agentic-rag.md)*

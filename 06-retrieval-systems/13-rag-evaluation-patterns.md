@@ -5,13 +5,13 @@ Evaluation is the hardest unsolved problem in RAG. You can build a retrieval pip
 ## Table of Contents
 
 - [The RAG Triad](#the-rag-triad)
-- [RAGAS Framework and Metrics](#ragas-framework)
+- [RAGAS Framework and Metrics](#ragas-framework-and-metrics)
 - [Component-Level Evaluation](#component-level-evaluation)
-- [LLM-as-Judge for RAG](#llm-as-judge)
-- [Building Golden Test Sets](#golden-test-sets)
-- [Automated Regression Testing](#regression-testing)
+- [LLM-as-Judge for RAG](#llm-as-judge-for-rag)
+- [Building Golden Test Sets](#building-golden-test-sets)
+- [Automated Regression Testing](#automated-regression-testing)
 - [Production Monitoring](#production-monitoring)
-- [Cost of Evaluation at Scale](#cost-at-scale)
+- [Cost of Evaluation at Scale](#cost-of-evaluation-at-scale)
 - [Tools Comparison](#tools-comparison)
 - [System Design Interview Angle](#system-design-interview-angle)
 - [References](#references)
@@ -52,7 +52,7 @@ The RAG Triad is the foundational framework for evaluating RAG systems. It decom
 
 **Question**: Is each retrieved chunk actually relevant to the user query?
 
-**What it catches**: Bad retrieval -- the vector search returned documents about the wrong topic, or the query was ambiguous and the retriever guessed wrong.
+**What it catches**: Bad retrieval. The vector search returned documents about the wrong topic, or the query was ambiguous and the retriever guessed wrong.
 
 **How to measure**:
 - For each retrieved chunk, ask: "Is this chunk relevant to answering the query?"
@@ -65,7 +65,7 @@ The RAG Triad is the foundational framework for evaluating RAG systems. It decom
 
 **Question**: Is every claim in the generated answer supported by the retrieved context?
 
-**What it catches**: Hallucination -- the LLM generated claims that are plausible but not present in the retrieved documents.
+**What it catches**: Hallucination. The LLM generated claims that are plausible but not present in the retrieved documents.
 
 **How to measure**:
 - Decompose the answer into individual claims/statements.
@@ -79,7 +79,7 @@ The RAG Triad is the foundational framework for evaluating RAG systems. It decom
 
 **Question**: Does the final answer actually address what the user asked?
 
-**What it catches**: Tangential answers -- the retrieval was good, the answer is grounded, but it does not answer the question. Common when the retriever finds related-but-not-matching content.
+**What it catches**: Tangential answers. The retrieval was good, the answer is grounded, but it does not answer the question. Common when the retriever finds related-but-not-matching content.
 
 **How to measure**:
 - Generate N hypothetical questions that the answer would be a good response to.
@@ -218,6 +218,21 @@ The RAG Triad evaluates the system end-to-end. Component-level evaluation isolat
 | NDCG@10 | 0.50 | 0.70 | 0.85+ |
 | Precision@5 | 0.40 | 0.60 | 0.80+ |
 
+### Separate the Embedder from the Index
+
+A retrieval miss has two possible owners, and they need different tests:
+
+| Question | Metric | Ground truth | Fix if it fails |
+|----------|--------|--------------|-----------------|
+| Did the **embedder** rank the right chunk highly? | Recall@K with **exact** (brute-force) kNN | Human relevance labels | Model, chunking, contextualization |
+| Did the **ANN index** return what exact kNN would? | ANN recall@K vs exact kNN | Exact neighbors, no labels needed | Index params (`ef`, probes), quantization, rescoring |
+
+Run both on the same queries. If exact-kNN recall is fine and ANN recall is 0.85, no embedding upgrade will help. Quantization makes this test mandatory: the 1-to-4-bit rotation-based schemes that vector DBs added in 2026 (Qdrant TurboQuant and Turbo4, Weaviate 4-bit RQ preview) trade recall for memory, and are opt-in or preview rather than defaults.
+
+For index behavior at a scale you cannot label, use an open benchmark with exact ground truth. Qdrant-FineWeb-10B (September 1, 2026) ships 10.07B dense plus 10.07B sparse vectors and 100,000 queries with exact top-1,000 neighbors; its companion PubMed-Multi-Vector set compares dense, sparse and ColBERT-style retrieval on the same corpus. Vendor latency claims measured at 10M vectors with shallow top-k and no filters tell you little about a filtered top-100 query at a billion.
+
+**Public leaderboards are priors, not results.** MTEB scores can be inflated when models train on data that overlaps the public test sets. RTEB (from the MTEB team, October 2025) mixes open datasets with private held-out sets that the maintainers evaluate, which makes it the better shortlist filter; NVIDIA reports Nemotron 3 Embed 8B (open weights, OpenMDW-1.1) at #1 on RTEB Multilingual with 78.5 (vendor-reported, July 2026). Shortlist from RTEB, then decide on your own golden set.
+
 ### Generator Evaluation
 
 Isolate the generator by fixing the retrieval context and varying only the generation.
@@ -297,7 +312,21 @@ Using an LLM to evaluate another LLM's output is the dominant evaluation paradig
 2. **Decompose into atomic evaluations**: Evaluate one claim or one dimension at a time.
 3. **Require evidence**: Force the judge to cite the specific context passage that supports/contradicts each claim.
 4. **Calibrate with human agreement**: Run 100+ examples through both LLM and human judges. Measure Cohen's Kappa. Target > 0.7.
-5. **Use the strongest available model**: Claude Opus or GPT-4o as judges; never use the same model that generated the answer.
+5. **Use a strong model for calibration, a cheap one for volume**: a frontier judge (Claude Opus 5.5, GPT-6 Sol) for the human-agreement calibration set and CI; a small model for sampled production traffic once it matches the frontier judge's verdicts on that set. Never use the same model that generated the answer.
+6. **Pin and version the judge**: a judge swap is a metric change. Claude Sonnet 4.5 retires on November 30, 2026 (Claude API and Foundry), and Claude Haiku 4.5 retires on Foundry on November 15, so teams judging with either there must switch this quarter. Re-run the human-agreement calibration and re-baseline thresholds before comparing scores across the switch.
+
+### A Third Judge Tier: Typed Decision Models
+
+Many RAG checks are binary ("Is this claim supported? YES/NO"), and a 2026 class of models returns exactly that without generating text. TypeSafe's **Jev** (early access since September 2026) returns typed decisions (yes/no, choice, or score) with probabilities at $0.042 per 1M input tokens, output unmetered, and was integrated into LangSmith, Langfuse, Braintrust, Opik and DeepEval within two weeks of launch.
+
+| | Frontier LLM judge | Small LLM judge | Decision-model judge |
+|---|---|---|---|
+| **Example** | Claude Opus 5.5, GPT-6 Sol | GPT-6 Luna, Claude Haiku 4.5 | Jev |
+| **Output** | Verdict plus written rationale | Verdict plus rationale | Typed decision with probability; no rationale, no abstention |
+| **Good for** | Calibration, CI, ambiguous cases | Sampled production traffic | Binary claim checks on 100% of traffic |
+| **Cannot do** | Cheap volume | Hardest edge cases | Claim extraction, question generation, open-ended critique |
+
+The independent check matters more than the price. A September 2026 study (Rao and Callison-Burch, arXiv 2609.29769) found LLM rubric judges cost 16 to 325x more than Jev with accuracy differing significantly in at most 8 of 27 comparisons, but on Jev's most confident errors about 96% of LLM verdicts repeated the same wrong answer, and no cascade beat the best single judge by more than 2.7 points. **Escalating from a cheap judge to an expensive one saves money; it does not catch correlated errors.** Only a human-labeled slice does. Two reported limitations hit RAG directly: accuracy degrades with irrelevant context (exactly what a long retrieved context contains), and an independent benchmark found weaknesses on graded relevance. Test it at your context lengths before trusting it for faithfulness or context-relevance scoring.
 
 ---
 
@@ -341,7 +370,7 @@ A golden test set is a curated, versioned collection of (query, expected_context
   +-------------------------------------------------------+
   | Store in version control (golden_set_v3.json)           |
   | FREEZE the set for each evaluation cycle                |
-  | Never modify a frozen set -- create a new version       |
+  | Never modify a frozen set; create a new version         |
   +-------------------------------------------------------+
 ```
 
@@ -358,18 +387,33 @@ A golden test set is a curated, versioned collection of (query, expected_context
 ### Synthetic Test Generation with RAGAS
 
 ```python
-# Pseudocode: Generate synthetic test queries from your corpus
-from ragas.testset.generator import TestsetGenerator
-from ragas.testset.evolutions import simple, reasoning, multi_context
-
-generator = TestsetGenerator.from_langchain(
-    generator_llm=ChatOpenAI(model="gpt-4o"),
-    critic_llm=ChatOpenAI(model="gpt-4o"),
+# Generate synthetic test queries from your corpus (RAGAS 0.2+ API;
+# the 0.1-era ragas.testset.generator / evolutions imports no longer exist)
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from ragas.llms import LangchainLLMWrapper
+from ragas.embeddings import LangchainEmbeddingsWrapper
+from ragas.testset import TestsetGenerator
+from ragas.testset.synthesizers import (
+    SingleHopSpecificQuerySynthesizer,
+    MultiHopSpecificQuerySynthesizer,
+    MultiHopAbstractQuerySynthesizer,
 )
+
+generator_llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-4o"))
+generator_embeddings = LangchainEmbeddingsWrapper(
+    OpenAIEmbeddings(model="text-embedding-3-large")
+)
+generator = TestsetGenerator(llm=generator_llm, embedding_model=generator_embeddings)
+
+query_distribution = [
+    (SingleHopSpecificQuerySynthesizer(llm=generator_llm), 0.40),
+    (MultiHopSpecificQuerySynthesizer(llm=generator_llm), 0.35),
+    (MultiHopAbstractQuerySynthesizer(llm=generator_llm), 0.25),
+]
 testset = generator.generate_with_langchain_docs(
-    documents=load_documents("./knowledge_base/"),
-    test_size=200,
-    distributions={simple: 0.4, reasoning: 0.35, multi_context: 0.25}
+    load_documents("./knowledge_base/"),
+    testset_size=200,
+    query_distribution=query_distribution,
 )
 # CRITICAL: Always human-review synthetic data before using as ground truth
 testset.to_pandas().to_csv("golden_set_draft_v4.csv")
@@ -403,6 +447,8 @@ Every RAG pipeline change (new embeddings, chunk size, prompt edit, reranker swa
 
 Any metric below its absolute minimum blocks the PR. Any regression beyond threshold triggers a warning and flags the specific queries that degraded.
 
+Run the same suite on a schedule against production, not only on your own PRs. **A pinned model ID is not a pinned behavior**: on September 25, 2026 OpenAI fixed an image-encoding bug in GPT-6 Sol and GPT-6 Luna under unchanged model IDs and told customers to rerun image evals. Image-dependent RAG scores measured before the fix may reflect the defect rather than your pipeline.
+
 ---
 
 ## Production Monitoring
@@ -422,7 +468,7 @@ Offline evaluation is necessary but not sufficient. Production queries differ fr
 
 ### Retrieval Quality Drift
 
-Drift happens when the corpus changes but embeddings, chunks, or prompts do not keep up. Four common scenarios: (1) new documents with different vocabulary cause embedding space mismatch -- fix by re-embedding affected collections, (2) user query patterns shift to topics with no content -- detect via empty retrieval rate monitoring, (3) stale content returns outdated answers -- add freshness metadata and prefer recent docs, (4) embedding model updates change similarity distributions -- re-calibrate all thresholds after model changes.
+Drift happens when the corpus changes but embeddings, chunks, or prompts do not keep up. Four common scenarios: (1) new documents with different vocabulary cause embedding space mismatch (fix by re-embedding affected collections); (2) user query patterns shift to topics with no content (detect via empty retrieval rate monitoring); (3) stale content returns outdated answers (add freshness metadata and prefer recent docs); (4) embedding model updates change similarity distributions (re-calibrate all thresholds after model changes).
 
 ---
 
@@ -432,23 +478,29 @@ LLM-as-judge evaluation is powerful but expensive. Understanding the cost struct
 
 ### Cost per Query (Full RAG Triad)
 
-| Metric | LLM Calls | Tokens | GPT-4o Cost | Claude Haiku Cost |
-|--------|-----------|--------|-------------|-------------------|
-| Faithfulness | ~3 (extract + verify) | ~3k | $0.0075 | $0.00075 |
-| Context Relevance | ~5 (per chunk) | ~2.5k | $0.00625 | $0.000625 |
-| Answer Relevance | ~2 (question gen) | ~1.6k | $0.004 | $0.0004 |
-| **Full Triad** | **~10** | **~7k** | **~$0.018** | **~$0.002** |
+List prices on October 1, 2026, assuming 90% of tokens are input and 10% output, before reasoning tokens:
+
+| Metric | LLM Calls | Tokens | Claude Opus 5.5 ($4 / $20) | Claude Haiku 4.5 ($1 / $5) | GPT-6 Luna ($0.10 / $0.50) |
+|--------|-----------|--------|----------------------------|----------------------------|----------------------------|
+| Faithfulness | ~3 (extract + verify) | ~3k | $0.017 | $0.0042 | $0.00042 |
+| Context Relevance | ~5 (per chunk) | ~2.5k | $0.014 | $0.0035 | $0.00035 |
+| Answer Relevance | ~2 (question gen) | ~1.6k | $0.009 | $0.0022 | $0.00022 |
+| **Full Triad** | **~10** | **~7k** | **~$0.04** | **~$0.01** | **~$0.001** |
+
+Two caveats change the real bill. Claude Opus 5.5 cannot run with thinking disabled (default effort `medium`), so set `low` effort for judge calls and measure the reasoning tokens. And the binary verification calls can move to a decision-model judge (about $0.0003 per query at Jev's $0.042 per 1M input tokens), leaving only claim extraction and question generation on a generative model.
 
 ### Scaling Strategy
 
 | Evaluation Type | Frequency | Volume | Judge Model | Monthly Cost (10k queries/day) |
 |----------------|-----------|--------|-------------|-------------------------------|
-| **CI Regression** | Per PR | Golden set (500 queries) | GPT-4o | ~$9/run |
-| **Nightly Batch** | Daily | Random 1k production queries | Claude Haiku | ~$60/month |
-| **Production Sample** | Real-time | 5% of traffic | Claude Haiku | ~$300/month |
-| **Deep Audit** | Weekly | Full golden set + analysis | GPT-4o | ~$36/month |
+| **CI Regression** | Per PR | Golden set (500 queries) | Frontier (Claude Opus 5.5 / GPT-6 Sol) | ~$20/run |
+| **Nightly Batch** | Daily | Random 1k production queries | Small (GPT-6 Luna), Batch API | ~$15/month |
+| **Production Sample** | Real-time | 5% of traffic (500/day) | Small (GPT-6 Luna) | ~$15/month |
+| **Deep Audit** | Weekly | Full golden set + analysis | Frontier, Batch API | ~$45/month |
 
-**Insight**: Use Claude Haiku 4.5 or GPT-5.5-mini for high-volume production sampling. Reserve Claude Opus 4.7 or GPT-5.5 for CI regression tests and deep audits where accuracy matters more than cost.
+Frontier rows use Claude Opus 5.5 prices; GPT-6 Sol at $2 / $10 roughly halves them.
+
+**Insight**: The judge bill is small next to the human-labeling bill; the expensive mistake is a cheap judge that disagrees with your annotators. Use a small model (GPT-6 Luna, Claude Haiku 4.5) for high-volume sampling only after it matches the frontier judge on the calibration set, and reserve Claude Opus 5.5 or GPT-6 Sol for CI and deep audits. Nightly and weekly jobs can wait, so run them through a Batch API at 50% off.
 
 ---
 
@@ -463,7 +515,10 @@ LLM-as-judge evaluation is powerful but expensive. Understanding the cost struct
 | **TruLens** | RAG Triad evaluation, observability | Yes | Coined the RAG Triad, good tracing | Less active development |
 | **UpTrain** | Production monitoring, drift detection | Yes | Hybrid eval (LLM + heuristic), drift alerts | Lower ranking accuracy |
 | **Braintrust** | Team collaboration, experiment tracking | Commercial | Best UI/UX, experiment comparison | Paid for advanced features |
-| **LangSmith** | LangChain ecosystem, tracing | Commercial | Deep LangChain integration, tracing | Locked to LangChain ecosystem |
+| **LangSmith** | Tracing, evals, trace-to-fine-tune loop | Commercial | Deepest LangChain/LangGraph integration; SDK and OTel ingestion for other stacks | SaaS extended-retention traces capped at 180 days (from Sep 14, 2026): not an audit log |
+| **Langfuse** | Self-hosted tracing + evals | Yes | OTel-native, exportable; Python SDK 4.x (`@observe()`; the v2 `trace()` API is gone) | Self-hosting means operating ClickHouse, Redis and object storage alongside Postgres |
+| **Arize Phoenix** | Self-hosted tracing + RAG evals | Source-available (Elastic-2.0) | OTel-native, strong retrieval views | Dynatrace agreed to acquire Arize (August 13, 2026): watch the roadmap |
+| **Promptfoo** | CI assertions, red-teaming | Yes (MIT) | Declarative test suites; OpenAI's migration target for OpenAI Evals (read-only Oct 31, shut down Nov 30, 2026) | OpenAI agreed to acquire it (announced March 2026): weigh vendor neutrality |
 
 ### When to Use What
 
@@ -478,7 +533,11 @@ LLM-as-judge evaluation is powerful but expensive. Understanding the cost struct
     --> UpTrain or Braintrust (drift detection, alerting)
 
   Want end-to-end observability?
-    --> LangSmith (if LangChain) or Braintrust (if framework-agnostic)
+    --> LangSmith or Braintrust (SaaS), Langfuse or Phoenix (self-hosted, OTel)
+
+  Still on OpenAI Evals?
+    --> It goes read-only on October 31, 2026 and shuts down November 30:
+        export results and move to Promptfoo or your own harness before then
 
   Building custom eval pipeline?
     --> Roll your own with LLM-as-judge + the RAG Triad structure
@@ -522,14 +581,14 @@ I would use the RAG Triad to isolate the failure mode:
 
 2. **Run the triad**:
    - **Context Relevance low?** --> Retrieval problem. The system is fetching wrong documents. Fix: inspect embedding similarity scores, check if the query language matches document language, try hybrid search (BM25 + dense), add a reranker.
-   - **Groundedness low?** --> Hallucination problem. The LLM is making things up despite having good context. Fix: strengthen the system prompt ("Only answer from the provided context"), reduce temperature, switch to a more instruction-following model, or add citation requirements.
+   - **Groundedness low?** --> Hallucination problem. The LLM is making things up despite having good context. Fix: strengthen the system prompt ("Only answer from the provided context"), require citations to chunk IDs and verify them, or switch to a more instruction-following model. Lowering temperature is no longer a universal lever: GPT-6 Astra rejects `temperature`, and the newest Claude models reject non-default sampling parameters.
    - **Answer Relevance low?** --> The system retrieves related content and faithfully summarizes it, but misses the actual question. Fix: improve query understanding (query rewriting, HyDE), add query classification to route to the correct index.
 
 3. **Build a regression test**: Take the 50 failing queries, annotate the expected answers, and add them to the golden test set. Every future pipeline change must pass these cases.
 
 4. **Set up ongoing monitoring**: Sample 5% of production traffic for automated evaluation. Alert when faithfulness drops below 0.80 or context relevance drops below 0.60.
 
-The key insight is that "answers are wrong" is not a diagnosis -- it is a symptom. The RAG Triad turns a vague complaint into a specific, actionable root cause.
+The key insight is that "answers are wrong" is not a diagnosis; it is a symptom. The RAG Triad turns a vague complaint into a specific, actionable root cause.
 
 ### Q: How do you evaluate a RAG system when you do not have ground-truth answers?
 
@@ -549,9 +608,9 @@ The trade-off is accuracy vs. speed. Layer 1 gives you signal in hours but is ap
 
 **Strong answer:**
 
-Four strategies, in order of impact:
+Five strategies, in order of impact:
 
-1. **Tiered judge models**: Use Claude Haiku ($0.002/query) for production sampling (90% of volume). Reserve GPT-4o ($0.018/query) for CI regression tests and weekly deep audits. This alone cuts costs by 80%.
+1. **Tiered judge models**: Use a small judge such as GPT-6 Luna (~$0.001/query for the full triad) for production sampling (90% of volume), after checking it agrees with the frontier judge on the calibration set. Reserve Claude Opus 5.5 (~$0.04/query) or GPT-6 Sol (~$0.02/query) for CI regression tests and weekly deep audits. With a 20-40x price gap, this alone cuts costs by well over 80%.
 
 2. **Smart sampling**: Do not evaluate every query. Sample 5% of production traffic, stratified by query type and user segment. For CI, only run the golden set (500 queries), not the full synthetic set.
 
@@ -559,7 +618,9 @@ Four strategies, in order of impact:
 
 4. **Heuristic pre-filters**: Before calling the LLM judge, run cheap heuristic checks. If the answer contains "I don't know" or has zero overlap with the context (ROUGE-L < 0.1), skip the expensive faithfulness evaluation and assign a score directly.
 
-The goal is to spend evaluation budget where it provides the most signal: on ambiguous, borderline cases where the LLM judge's nuanced reasoning matters.
+5. **Batch and decision models**: Move nightly and weekly runs to a Batch API (50% off), and move binary claim verification to a typed decision-model judge such as Jev. I would not expect the decision model to add accuracy: research in September 2026 found its confident errors are mostly shared by LLM judges, so cascading saves money but a human-labeled slice is still the real check.
+
+The goal is to spend evaluation budget where it provides the most signal: on ambiguous, borderline cases where the LLM judge's nuanced reasoning matters, and on the human labels that keep every judge honest.
 
 ---
 
@@ -571,7 +632,11 @@ The goal is to spend evaluation budget where it provides the most signal: on amb
 - Confident AI. "RAG Evaluation Metrics" (2025)
 - Microsoft. "The Path to a Golden Dataset" (2025)
 - Prem AI. "RAG Evaluation: Metrics, Frameworks & Testing" (2026)
+- Rao and Callison-Burch. "JEV vs. LLMs as Rubric Judges: Cheaper, Faster, and Wrong in the Same Places" (arXiv 2609.29769, 2026)
+- MTEB team. "RTEB: Retrieval Embedding Benchmark" (October 2025)
+- Qdrant. "Qdrant-FineWeb-10B" (September 2026)
+- RAGAS documentation. "Testset Generation for RAG" (docs.ragas.io)
 
 ---
 
-*Previous: [Multi-Modal RAG](12-multimodal-rag.md) | Next: Coming Soon*
+*Previous: [Multi-Modal RAG](12-multimodal-rag.md) | Next: [Production RAG at Scale](14-production-rag-at-scale.md)*

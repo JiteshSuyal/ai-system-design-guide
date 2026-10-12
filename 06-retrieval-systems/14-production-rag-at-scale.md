@@ -1,30 +1,30 @@
 # Production RAG at Scale
 
-Production RAG is no longer a weekend project. It is a distributed system with retrieval pipelines, caching layers, routing logic, self-correction loops, multi-tenant isolation, and cost controls, all operating under strict latency SLAs. When RAG fails in production, the failure is in retrieval roughly 73% of the time, not generation, so the enterprise deployments that succeed treat the knowledge source (not the model) as the primary investment.
+Production RAG is no longer a weekend project. It is a distributed system with retrieval pipelines, caching layers, routing logic, self-correction loops, multi-tenant isolation, and cost controls, all operating under strict latency SLAs. When RAG fails in production, the cause is usually upstream of the model: the right passage was never chunked cleanly, indexed, or retrieved, so the generator never saw it. That is why the enterprise deployments that succeed treat the knowledge source (not the model) as the primary investment.
 
 ## Table of Contents
 
 - [RAG vs Long Context](#rag-vs-long-context)
-- [Query Routing and Classification](#query-routing)
-- [Semantic Caching for RAG](#semantic-caching)
-- [Multi-Index Strategies](#multi-index)
-- [RAG Pipeline Optimization](#pipeline-optimization)
-- [Corrective RAG: Self-Checking Retrieval](#corrective-rag)
+- [Query Routing and Classification](#query-routing-and-classification)
+- [Semantic Caching for RAG](#semantic-caching-for-rag)
+- [Multi-Index Strategies](#multi-index-strategies)
+- [RAG Pipeline Optimization](#rag-pipeline-optimization)
+- [Corrective RAG: Self-Checking Retrieval](#corrective-rag-self-checking-retrieval)
 - [Adaptive Retrieval](#adaptive-retrieval)
-- [Cost Optimization Patterns](#cost-optimization)
-- [Failure Modes and Debugging](#failure-modes)
-- [Monitoring and Alerting](#monitoring)
-- [Scaling to Millions of Documents](#scaling)
-- [Multi-Tenant RAG Isolation](#multi-tenant)
-- [Real-World Architecture Examples](#architectures)
-- [System Design Interview Angle](#interview)
+- [Cost Optimization Patterns](#cost-optimization-patterns)
+- [Failure Modes and Debugging](#failure-modes-and-debugging)
+- [Monitoring and Alerting](#monitoring-and-alerting)
+- [Scaling to Millions of Documents](#scaling-to-millions-of-documents)
+- [Multi-Tenant RAG Isolation](#multi-tenant-rag-isolation)
+- [Real-World Architecture Examples](#real-world-architecture-examples)
+- [System Design Interview Angle](#system-design-interview-angle)
 - [References](#references)
 
 ---
 
 ## RAG vs Long Context
 
-With every major frontier family now supporting 1M+ token context windows (Claude Opus 4.7, Claude Sonnet 4.6, GPT-5.5, Gemini 3.1 Pro, Qwen 3.6 Plus, Llama 4 Maverick), the question is no longer "RAG or long context?" but "When does each win?"
+With most frontier families supporting 1M-token context windows (Claude Opus 5.5 and Sonnet 5.5, GPT-6 Sol and Astra at 1.05M, Gemini 3.8 Flash, Muse Spark 1.3, and open models such as Xiaomi MiMo-V2.6 and Llama 4 Maverick), the question is no longer "RAG or long context?" but "When does each win?"
 
 ### The Decision Matrix
 
@@ -52,17 +52,39 @@ With every major frontier family now supporting 1M+ token context windows (Claud
 
 | Dimension | RAG | Long Context (1M tokens) |
 |-----------|-----|--------------------------|
-| **Avg Query Cost** | ~$0.0001 | ~$0.10 |
+| **Avg Query Cost** | ~$0.001-0.015 (5K context tokens, GPT-6 Luna to Claude Sonnet 5.5) | ~$0.20-0.25 input with a warm Claude cache; $2-4 uncached |
 | **Avg Latency (p50)** | ~1s | ~30-45s |
 | **Precision on Specific Facts** | High (targeted retrieval) | Degrades in middle |
 | **Cross-Document Synthesis** | Weak (limited context) | Strong (sees everything) |
 | **Corpus Size Limit** | Unlimited | ~1M tokens |
-| **Data Freshness** | Minutes (incremental index) | Requires full reload |
-| **Cost at 1000 QPS** | ~$100/day | ~$100,000/day |
+| **Data Freshness** | Minutes (incremental index) | Requires full reload; any edit invalidates the cache after it |
+| **Cost per 1M queries** | ~$1K-15K | ~$200K+ with a warm cache; $2M-4M uncached |
 
 ### The "Lost in the Middle" Problem
 
 LLMs do not attend uniformly across their context window. Information positioned in the middle of a long context sees 30%+ accuracy degradation compared to information at the beginning or end. RAG sidesteps this entirely by placing only the most relevant chunks into a short, focused context.
+
+### The Cache-Read Break-Even
+
+Cheaper cache reads moved the line for **stable** corpora. On the same model, a corpus kept warm in the provider's prompt cache costs less input per query than RAG when:
+
+```
+corpus_tokens x cache_read_multiplier  <  retrieved_context_tokens
+```
+
+| Model (list prices, Oct 1, 2026) | Cache read | Corpus that costs the same as a 5K-token RAG context |
+|----------------------------------|------------|------------------------------------------------------|
+| Claude Fable 5.1 | 0.025x ($0.25 per 1M) | ~200K tokens |
+| Claude Opus 5.5 | 0.05x ($0.20 per 1M) | ~100K tokens |
+| GPT-6.1 Sol | 0.05x ($0.10 per 1M) | ~100K tokens |
+| Most other Claude and OpenAI models | 0.1x | ~50K tokens |
+
+What the formula leaves out:
+- **Cache writes and TTLs.** Claude charges 1.25x for 5-minute writes and 2x for 1-hour writes (Opus 5.5: $5 and $8 per 1M); OpenAI charges 1.25x on GPT-5.6 and later with a fixed 30-minute TTL. A corpus queried less often than the TTL pays the write again and again. Gemini's explicit caches read at 0.1x on Gemini 3.8 Flash but also bill storage by the hour ($0.50 per 1M tokens per hour through December 31, 2026, $1.00 from January 1, 2027), so a warm 200K-token corpus costs $0.10 to $0.20 an hour before a single read.
+- **Long-context surcharges.** OpenAI bills the whole request at long-context rates once input passes 272K tokens, and xAI doubles all tokens at 200K and above. Anthropic prices flat to 1M on Claude 4.6 and later.
+- **Quality and latency.** A cheap cache read does not fix lost-in-the-middle or the prefill time of a very long prompt, and it only helps if the corpus fits.
+
+Recompute this per model instead of quoting fixed thresholds. The practical change is at the small end: a 100K-200K-token handbook or policy set that rarely changes is now often cheaper and simpler as a cached prefix than as an index.
 
 ### Best Practice: The Hybrid Pattern
 
@@ -85,6 +107,19 @@ The winning architecture combines both: use RAG to retrieve the top candidates f
 ```
 
 **Rule of Thumb**: If your corpus fits in context AND you can afford the latency AND you can afford the cost, use long context. Otherwise, use RAG. For most production systems with cost and latency constraints, RAG remains the correct default.
+
+### A Third Option: Compile the Knowledge Once
+
+A newer product category precomputes structured knowledge at ingestion instead of retrieving chunks per query. The clearest example is **Pinecone Nexus** (GA August 6, 2026): a subject-matter expert describes the work as a Manifest (entities, relationships, answer shapes); Nexus compiles source documents once into summaries, structured extracts and entity-relationship graphs, and agents query them in one call through the KnowQL language. The data plane runs in the customer's AWS, Google Cloud or Azure account. Pinecone reports (vendor-run) that on tau-Knowledge, GPT-5.5 with Nexus scored 47.4% versus 46.4% without, at 77% lower cost per task and about 35% fewer model calls.
+
+| | Retrieve at query time (RAG) | Compile once |
+|---|---|---|
+| **Where cost lands** | Every query | Ingestion and recompilation |
+| **Where errors land** | Retrieval misses, visible per query | Compilation errors, baked into every answer until recompiled |
+| **Handles unanticipated questions** | Yes | Only within the shapes the Manifest anticipated |
+| **Corpus drift** | Incremental re-index | Recompile affected artifacts |
+
+Compile-once fits stable, high-volume domains with recurring question shapes (policies, case law, product catalogs). Keep query-time retrieval for long-tail, exploratory questions, and keep it as the fallback even where you compile.
 
 ---
 
@@ -134,7 +169,7 @@ Not every query needs retrieval. A production system classifies incoming queries
 class QueryRouter:
     """Routes queries to the optimal retrieval strategy."""
 
-    def __init__(self, classifier_model: str = "gpt-4o-mini"):
+    def __init__(self, classifier_model: str = "gpt-6-luna"):
         self.classifier = classifier_model
         self.route_counts = Counter()  # for monitoring
 
@@ -557,6 +592,8 @@ Corrective RAG (CRAG) adds a verification layer between retrieval and generation
                        query
 ```
 
+The AMBIGUOUS branch needs a web search backend, and gateways now sell one. Cloudflare's Web Search API (beta, October 2, 2026) runs inside AI Gateway and returns structured web snippets from Ceramic.ai, Exa and Linkup at the partners' list prices with no markup, billed and logged through the gateway. Whoever supplies it, treat web results as untrusted input: they can carry prompt injection, so put them in a separate, labeled context block and never let them outrank a tenant's own documents in the prompt.
+
 ### Implementation
 
 ```python
@@ -734,6 +771,10 @@ def plan_retrieval_budget(query: str, max_budget_tokens: int = 4000):
         return {"context_tokens": 3500, "generation_tokens": 500, "top_k": 15}
 ```
 
+### Adaptive Effort as a Managed Feature
+
+Managed search services now ship this escalation pattern as configuration. Azure AI Search knowledge bases went GA in REST API 2026-04-01 (extractive retrieval; query planning and answer synthesis remain preview), and the 2026-08-01-preview API adds `retrievalReasoningEffort: "auto"`: run a lightweight retrieval pass first and escalate to LLM query planning, up to medium effort, only when grounding is insufficient. The same preview streams retrieve results over server-sent events and lets you bypass reranking per knowledge source. If you build the router yourself, copy the shape: the cheap path must be the default, and the escalation trigger must be a measured grounding signal, not a guess about query complexity.
+
 ---
 
 ## Cost Optimization Patterns
@@ -747,11 +788,11 @@ Component         Cost per Query    % of Total    Optimization
 -----------------------------------------------------------------
 Embedding         $0.000005         ~1%           Batch + cache
 Vector Search     $0.00001          ~2%           Index optimization
-Reranking         $0.0001           ~15%          Skip for simple queries
-LLM Generation    $0.0005-0.005     ~80%          Model tiering, caching
+Reranking         $0.0001           ~5-15%        Skip for simple queries
+LLM Generation    $0.0004-0.008     ~80-95%       Model tiering, caching
 -----------------------------------------------------------------
-Total (naive)     ~$0.001-0.006
-Total (optimized) ~$0.0001-0.001    (5-10x reduction)
+Total (naive)     ~$0.001-0.01
+Total (optimized) ~$0.0002-0.002    (5-10x reduction)
 ```
 
 ### Tiered Model Strategy
@@ -762,15 +803,17 @@ Total (optimized) ~$0.0001-0.001    (5-10x reduction)
              +----------+----------+----------+
  Generation  |  Small   |  Mid     |  Large   |
  Model       |  Model   |  Model   |  Model   |
-             | (4o-mini)| (Claude  | (Claude  |
-             |          |  Sonnet) |  Opus)   |
-             | ~$0.0002 | ~$0.002  | ~$0.02   |
+             | (GPT-6   | (Sonnet  | (Opus    |
+             |  Luna)   |  5.5)    |  5.5)    |
+             | ~$0.0004 | ~$0.008  | ~$0.016  |
              +----------+----------+----------+
 
  Reranking   |  Skip    | Lightweight| Cross-  |
              |          | reranker   | encoder |
              +----------+----------+----------+
 ```
+
+Costs are per request at 2.6K input and 300 output tokens, list prices on October 1, 2026, before reasoning tokens. Note where the spread is: Claude Opus 5.5 ($4 / $20) is only 2x Sonnet 5.5 ($2 / $10), while Sonnet 5.5 or GPT-6 Sol is 20x GPT-6 Luna. Most of the routing value is now at the small/mid boundary, so spend classifier effort there; the mid/large boundary barely pays for its misroutes.
 
 ### Progressive Detail Pattern
 
@@ -789,7 +832,7 @@ class ProgressiveRAG:
         # Level 2: Fast retrieval + small model
         chunks = await retrieve(query, top_k=3)
         response = await generate(
-            query, chunks, model="gpt-4o-mini"
+            query, chunks, model="gpt-6-luna"
         )
 
         # Check confidence
@@ -801,12 +844,12 @@ class ProgressiveRAG:
         chunks = await retrieve(query, top_k=15)
         reranked = await rerank(query, chunks, top_k=5)
         response = await generate(
-            query, reranked, model="claude-sonnet-4-5"
+            query, reranked, model="claude-sonnet-5-5"  # replaces claude-sonnet-4-5 (retires Nov 30, 2026)
         )
 
         if response.confidence > 0.7:
             await self.cache.put(query, response)
-            return response.text  # Cost: ~$0.003
+            return response.text  # Cost: ~$0.008
 
         # Level 4: Full agentic pipeline (expensive but thorough)
         return await self.agentic_pipeline.run(query)  # Cost: ~$0.05
@@ -838,6 +881,21 @@ class CostGuard:
 
         return True
 ```
+
+### Build vs Buy: Managed RAG Unit Prices
+
+Managed retrieval now publishes per-query prices, which turns build-versus-buy into arithmetic. Cloudflare AI Search went GA on October 1, 2026: Workers AI, Vectorize, R2 and Browser Run underneath, vector and keyword search in parallel with fusion and optional reranking, optional OCR for scanned PDFs, and image retrieval through Qwen3-VL-Embedding. Billing starts November 1, 2026:
+
+| Item | Price | Free per month (every Workers plan) |
+|------|-------|-------------------------------------|
+| Ingestion | $0.75 per 1M tokens, plus $0.50 per 1M for image processing | 5M tokens |
+| Storage | $2.00 per GB-month | 10 GB |
+| Semantic queries (vector or hybrid) | $0.75 per 1K | 1,000 |
+| Full-text queries | $0.10 per 1K | 1,000 |
+
+At 1M hybrid queries a month, retrieval costs $750: far less than the engineering time to run your own stack. At 1,000 QPS (about 2.6B queries a month) it is about $1.9M a month for retrieval alone, which pays for a lot of self-hosted vector DB nodes and an on-call rotation. The crossover sits in the tens of millions of queries per month; compute it with your own infrastructure and staffing costs. Other vendors are packaging the same stack: Cohere Compass Cloud (private beta, September 25, 2026) bundles parsing, dense plus sparse embedding, permission-aware retrieval and reranking behind an MCP server that agents use to narrow the corpus step by step.
+
+**Lifecycle risk is the other half of "buy".** OpenAI shut down the Assistants API on August 26, 2026. Vector stores survived: the Responses API `file_search` tool takes the same `vector_store_ids` with `max_num_results` and metadata filters, so indexes needed no re-ingestion, but thread and run orchestration code had to be rewritten. Keep retrieval storage and orchestration separable so either can move without the other.
 
 ---
 
@@ -880,11 +938,11 @@ Production RAG systems have compounding failure probabilities. With 95% reliabil
 +------------------------------------------------------------------+
 ```
 
-### The 80% Rule of Chunking
+### Many Retrieval Failures Are Chunking Failures
 
-An estimated 80% of RAG quality issues trace back to chunking decisions, not retrieval or generation. Common chunking failures:
+The retriever can only return chunks the chunker created. A fact split across two chunks, or a chunk stripped of the section header that gave it meaning, cannot be retrieved however good the embeddings and reranker are. So when the checklist below points at retrieval, inspect the chunks before you swap the embedding model. Common chunking failures:
 
-- **Chunk too small**: Loses context. "It costs $200" -- what costs $200?
+- **Chunk too small**: Loses context. "It costs $200": what costs $200?
 - **Chunk too large**: Dilutes relevance. A 2000-token chunk where only 1 sentence is relevant.
 - **Boundary splits**: A table or list is split across two chunks.
 - **Missing metadata**: Chunks lack headers, document titles, or section context.
@@ -894,14 +952,14 @@ An estimated 80% of RAG quality issues trace back to chunking decisions, not ret
 ```
 When RAG quality drops, investigate in this order:
 
-1. RETRIEVAL QUALITY (check first -- most common root cause)
+1. RETRIEVAL QUALITY (check first: most common root cause)
    [ ] Log the query and retrieved chunks side by side
    [ ] Compute retrieval precision@K manually for 20 failing queries
    [ ] Check if relevant documents exist in the index at all
-   [ ] Compare BM25 vs vector results -- if BM25 wins, embeddings are stale
+   [ ] Compare BM25 vs vector results: if BM25 wins, embeddings are stale
 
 2. CHUNKING QUALITY (check second)
-   [ ] Sample 50 random chunks -- do they make sense in isolation?
+   [ ] Sample 50 random chunks: do they make sense in isolation?
    [ ] Check chunk boundaries for tables, lists, code blocks
    [ ] Verify metadata (title, section, doc_id) is present
 
@@ -910,7 +968,7 @@ When RAG quality drops, investigate in this order:
    [ ] Check if reranker is pushing relevant results down
 
 4. GENERATION QUALITY (check last)
-   [ ] Test with perfect context (manually curated) -- does LLM still fail?
+   [ ] Test with perfect context (manually curated): does LLM still fail?
    [ ] Check for context window overflow (truncated chunks)
    [ ] Verify system prompt is not conflicting with retrieved context
 ```
@@ -929,7 +987,7 @@ Agentic RAG introduces three additional failure patterns:
 
 ## Monitoring and Alerting
 
-Production RAG requires dedicated monitoring beyond standard application metrics. Roughly 60% of new RAG deployments now include systematic evaluation from day one (up sharply from the "ship first, eval later" pattern of earlier RAG generations).
+Production RAG requires dedicated monitoring beyond standard application metrics. Treat systematic evaluation as a day-one requirement rather than the "ship first, eval later" pattern of earlier RAG generations; see [RAG Evaluation Patterns](13-rag-evaluation-patterns.md) for the metrics and judge tiers.
 
 ### The RAG Monitoring Stack
 
@@ -1125,6 +1183,20 @@ class IndexMaintenanceScheduler:
                 alert(f"Shard {shard.id} unhealthy: {health.reason}")
 ```
 
+### Re-Embedding Without Downtime
+
+"New embedding model means a full re-index" is no longer the only answer:
+
+- **Shared embedding spaces.** The Voyage 4 family (voyage-4-large $0.12, voyage-4 $0.06, voyage-4-lite $0.02 per 1M tokens, plus open-weight voyage-4-nano) shares one space, as do Cohere's `embed-v5.0-pro` and `-fast` (September 30, 2026). Index once with the large model and query with the small one; you can change the query-side model without touching the index. Qdrant's Constella research preview (September 29, 2026) pushes the idea further: a fixed Stella (400M) document index with swappable query encoders, where the 34.5M-parameter Constella Nano keeps about 91% of Stella's BEIR nDCG@10 at 12x lower CPU latency (vendor-reported).
+- **Online backfill.** When the document side must change, add a second vector field, backfill it in the background, shadow-query both on the golden set, then cut over. Milvus 3.0 (July 2026) supports adding, backfilling and dropping columns online, which makes this a hot path over hundreds of millions of rows.
+- **Embedding inside the database.** MongoDB Atlas Automated Embedding (GA August 13, 2026) and turbopuffer native embedding (GA September 29, 2026) remove the sync pipeline, but they tie the index to a vendor-chosen model version. Ask how model upgrades and re-embedding are scheduled and billed before adopting.
+
+### Memory Tiers and Quantization
+
+At 1,536 float32 dimensions a vector is 6 KB, so a billion chunks is about 6 TB before the graph. Rotation-based low-bit quantization is the main lever, and it is **opt-in or preview, not a default**: Qdrant added Hadamard-rotated TurboQuant in 1.18 and a 4-bit-only Turbo4 storage type in 1.19 (9x smaller than float32 plus a 4-bit copy, at the cost of peak recall, because the originals are gone); Weaviate 1.39 previews 4-bit Rotational Quantization (6,144 bytes to 784 for a 1,536-dim vector). Qdrant 1.19 also replaced `on_disk` / `always_ram` with one `memory` setting (pinned, cached or cold) across vectors, HNSW, sparse and payload indexes.
+
+The production pattern: quantized vectors pinned in RAM for candidate search, full-precision originals cold on disk for rescoring the top candidates, and ANN recall measured against exact kNN after every quantization change (see [RAG Evaluation Patterns](13-rag-evaluation-patterns.md#separate-the-embedder-from-the-index)).
+
 ### Read Replicas for Retrieval
 
 Separate read and write paths so that ingestion never degrades query latency.
@@ -1228,6 +1300,19 @@ class TenantIsolatedRetriever:
 
         return chunks
 ```
+
+### Leaks the Tenant Filter Does Not Stop
+
+A mandatory `tenant_id` filter stops cross-tenant *results*. It does not stop cross-tenant *signals*:
+
+| Channel | How it leaks | Mitigation |
+|---------|--------------|------------|
+| **Shared BM25 statistics** | In a pooled index, IDF is computed over every tenant's documents, so one tenant's vocabulary shifts another's ranking and scores reflect corpus-wide term frequencies | Per-tenant IDF (Qdrant 1.19 added it for sparse/BM25 search), or a siloed lexical index |
+| **Inference prefix cache** | On self-hosted engines a shared prefix cache is a timing oracle for whether another tenant sent the same prefix | Per-tenant cache salt on every code path. vLLM GHSA-935w-9g4m-p28p (fixed in 0.30.0) was one path that dropped the salt; run vLLM 0.30.0 or later |
+| **Semantic response cache** | An answer built from Tenant A's documents is served to Tenant B's similar query | Key the cache by tenant and ACL set, never globally |
+| **Engine vulnerabilities** | Bugs reachable by any role allowed to build indexes | pgvector 0.8.7 (October 1, 2026) fixes CVE-2026-103484, an IVFFlat build overflow that can lead to code execution (0.8.6 and below). Do not grant index creation to app roles, and confirm your managed Postgres has shipped the patch |
+
+Silo can also mean the customer's own cloud account now: Pinecone BYOC (GA September 23, 2026, on AWS, Google Cloud and Azure) runs the data plane, including vectors, documents, metadata and request payloads, in the customer's cloud, while the vendor control plane manages it through outbound calls only.
 
 ### Tenant-Aware Ingestion
 
@@ -1449,13 +1534,13 @@ I would design this in four layers.
 
 **Layer 1: Routing and Caching.** A query router classifies each incoming query (direct LLM, simple RAG, complex RAG). A three-tier cache (exact match, semantic cache, document cache) handles roughly 40-50% of traffic. This means only 5,000-6,000 QPS actually hit the retrieval pipeline.
 
-**Layer 2: Retrieval.** I would use the bridge isolation model -- the top 20 enterprise tenants get dedicated indexes (silo), and the remaining 480 share a pooled index with mandatory tenant_id filtering. Retrieval runs hybrid search (vector + BM25) in parallel, with Reciprocal Rank Fusion to merge results. The vector database cluster is sharded by tenant tier and replicated for read throughput.
+**Layer 2: Retrieval.** I would use the bridge isolation model: the top 20 enterprise tenants get dedicated indexes (silo), and the remaining 480 share a pooled index with mandatory tenant_id filtering. Retrieval runs hybrid search (vector + BM25) in parallel, with Reciprocal Rank Fusion to merge results. The vector database cluster is sharded by tenant tier and replicated for read throughput.
 
 **Layer 3: Generation.** A tiered model strategy routes simple queries to a small model and complex queries to a larger model. This keeps average cost low while maintaining quality for hard queries. Per-tenant rate limiting prevents noisy neighbors.
 
 **Layer 4: Observability.** Every query produces a trace with latency breakdowns, retrieval scores, and cost. Nightly quality checks sample 500 queries and evaluate faithfulness and relevancy. Alerts fire if p95 latency exceeds 3 seconds or faithfulness drops below 0.85.
 
-**Cost estimate**: At 10K QPS, assuming 50% cache hits and a 70/30 split between small/large models, daily cost is roughly $2,000-5,000 for generation plus $500-1,000 for infrastructure.
+**Cost estimate**: 10K QPS is 864M queries a day, so the per-request math dominates everything. With 50% cache hits, 432M generations a day remain. At 2.6K input and 300 output tokens per request and October 2026 list prices, a 70/30 split between GPT-6 Luna (~$0.0004 per request) and a $2 / $10 mid-tier model such as Claude Sonnet 5.5 or GPT-6 Sol (~$0.008) costs about $120K plus $1.06M, roughly **$1.2M a day** before prompt caching of the shared system prompt. That number drives the real design decisions: cache the static prompt prefix (0.1x reads or less), push the cache-hit rate up, negotiate committed-use pricing, and self-host the small tier, since about 300M small-model requests a day is far past the point where a dedicated GPU fleet beats a per-token API.
 
 ### Q: How do you handle the case where a RAG system retrieves irrelevant documents but the LLM generates a plausible-sounding answer anyway?
 
@@ -1463,7 +1548,7 @@ I would design this in four layers.
 
 This is the most dangerous RAG failure mode because it produces confident-sounding hallucinations grounded in real (but irrelevant) documents. I would address it at three points:
 
-First, at the retrieval stage, implement a relevance grader -- a classifier (or LLM call) that scores each retrieved chunk against the query. If all chunks score below a threshold, the system should either escalate to a web search (Corrective RAG pattern) or respond with "I don't have enough information" rather than generating from weak context.
+First, at the retrieval stage, implement a relevance grader, a classifier (or LLM call) that scores each retrieved chunk against the query. If all chunks score below a threshold, the system should either escalate to a web search (Corrective RAG pattern) or respond with "I don't have enough information" rather than generating from weak context.
 
 Second, at the generation stage, use constrained prompting that instructs the model to explicitly state when evidence is insufficient. Include a confidence score in the output and route low-confidence answers to human review.
 
@@ -1497,7 +1582,12 @@ The fix depends on the root cause, but common interventions are: tune the semant
 - RAGAS Framework. "Context Precision, Recall, Faithfulness, and Relevancy Metrics"
 - AWS. "Multi-Tenant RAG with Amazon Bedrock Knowledge Bases" (2025)
 - Microsoft. "Design a Secure Multitenant RAG Inferencing Solution" (2025)
+- Microsoft. "What's new in Azure AI Search" (agentic retrieval, 2026-08-01-preview)
+- Cloudflare. "AI Search is now generally available" and AI Search limits and pricing (October 2026)
+- Pinecone. "Pinecone Nexus is generally available" (August 2026)
+- Qdrant. "Qdrant 1.19" release notes (August 2026)
+- pgvector. CHANGELOG, 0.8.7 (October 2026)
 
 ---
 
-*Next: [Data Engineering for AI](15-data-engineering-for-ai.md)*
+*Previous: [RAG Evaluation Patterns](13-rag-evaluation-patterns.md) | Next: [Data Engineering for AI](15-data-engineering-for-ai.md)*

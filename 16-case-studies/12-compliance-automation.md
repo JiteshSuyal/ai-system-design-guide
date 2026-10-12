@@ -40,7 +40,7 @@ flowchart TB
         FDA --> RETRIEVE
         PRECEDENT --> RETRIEVE
         INTERNAL --> RETRIEVE
-        RETRIEVE --> EVALUATE[Evaluate Compliance<br/>Claude Sonnet 4.6]
+        RETRIEVE --> EVALUATE[Evaluate Compliance<br/>Claude Sonnet 5.5]
     end
 
     subgraph Output["Compliance Report"]
@@ -70,6 +70,8 @@ claims = extract_claims(document)
 ```
 
 Each claim is then checked independently against relevant regulations.
+
+Generate the claim list with structured outputs (a JSON schema), not by forcing a tool call: on the newest Claude models (Fable 5.1, Opus 5.5, Sonnet 5.5), `tool_choice` set to `any` or a specific tool returns HTTP 400, which breaks extraction code written for older models.
 
 ### 2. Why RAG Over Fine-Tuning for Regulations?
 
@@ -131,8 +133,9 @@ compliance_decision = {
     "regulation_text": "Advertisements shall not contain claims that...",
     "precedent_cited": "Warning Letter 2023-FDA-04521",
     "reasoning": "Claim implies absolute safety, which contradicts...",
-    "model_used": "claude-3-7-sonnet-20251022",
-    "timestamp": "2025-12-21T10:30:00Z",
+    "model_used": "claude-sonnet-5-5",
+    "effort": "high",  # Record it: effort defaults change between model versions
+    "timestamp": "2026-10-01T10:30:00Z",
     "reviewer_id": null,  # Filled when human reviews
     "final_decision": null  # Filled after legal review
 }
@@ -146,7 +149,7 @@ Pharmaceutical marketing includes visual claims (happy patients, before/after im
 
 ```mermaid
 flowchart LR
-    IMAGE[Marketing Image] --> VISION[Vision-LLM<br/>GPT-4o]
+    IMAGE[Marketing Image] --> VISION[Vision-LLM<br/>Claude Sonnet 5.5]
     VISION --> DESCRIBE[Image Description]
     DESCRIBE --> CLAIMS_V[Visual Claims Extraction]
     CLAIMS_V --> CHECK_V[Compliance Check]
@@ -158,17 +161,19 @@ flowchart LR
 
 ## Cost Analysis
 
+Priced at Claude Sonnet 5.5 list rates ($2/$10 per 1M tokens), including thinking tokens at `high` effort, which bill as output:
+
 | Stage | Cost per Asset |
 |-------|----------------|
 | Document parsing | $0.05 |
-| Claim extraction | $0.15 |
+| Claim extraction | $0.10 |
 | Regulation retrieval | $0.02 |
-| Compliance evaluation (per claim, avg 12 claims) | $1.80 |
-| Image analysis (avg 5 images) | $0.75 |
-| Report generation | $0.10 |
-| **Total** | **$2.87** |
+| Compliance evaluation (per claim, avg 12 claims) | $1.44 |
+| Image analysis (avg 5 images) | $0.50 |
+| Report generation | $0.07 |
+| **Total** | **$2.18** |
 
-For 500 assets/month: **$1,435/month** (vs. $50K+/month for equivalent legal hours)
+For 500 assets/month: **about $1,090/month** (vs. $50K+/month for equivalent legal hours). The review SLA is two days, so nothing here needs real-time inference: running evaluation through the Batch API ($1/$5 on Sonnet 5.5) roughly halves the model lines. At this scale, pick the model on recall against your labeled violation set, not on price.
 
 ---
 

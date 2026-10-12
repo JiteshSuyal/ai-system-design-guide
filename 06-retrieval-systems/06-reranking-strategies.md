@@ -1,6 +1,6 @@
 # Reranking Strategies
 
-Reranking is the second stage of retrieval that re-scores a small set of candidates (Top 50-100) using a high-precision model. It is the bridge between "efficient search" and "perfect grounding": first-stage retrieval optimizes for recall, reranking optimizes for precision. Three rerankers dominate production today (BGE-Reranker-v2-m3, Cohere Rerank 3, Voyage rerank-2), with the choice driven by cost model, latency tail, language coverage, and whether you need self-hostable weights.
+Reranking is the second stage of retrieval that re-scores a small set of candidates (Top 50-100) using a high-precision model. It is the bridge between "efficient search" and "perfect grounding": first-stage retrieval optimizes for recall, reranking optimizes for precision. The common production choices as of October 2026 are the hosted Cohere Rerank 4 (Fast and Pro) and Voyage rerank-3 / rerank-3-lite, and the open-weight Qwen3-Reranker and bge-reranker-v2-m3. The choice is driven by cost model, latency tail, context length, language coverage, license, and whether you need self-hostable weights.
 
 ## Table of Contents
 
@@ -74,7 +74,7 @@ Document --> Encoder --> Doc Embedding +
 ```
 - O(n) per query (process each candidate)
 - Sees full query-document context
-- Uses the **Attention Mechanism** to compare how specific words in the query change the meaning of words in the document (late interaction)
+- Uses the **Attention Mechanism** to compare how specific words in the query change the meaning of words in the document (full, early interaction; ColBERT's "late interaction" sits between this and a bi-encoder)
 
 ### Two-Stage Pipeline
 
@@ -118,13 +118,19 @@ Each stage trades speed for accuracy.
 
 ### Cross-Encoder Models
 
-| Model | Size | Languages | Quality |
-|-------|------|-----------|---------|
-| ms-marco-MiniLM-L-6 | 22M | English | Good |
-| bge-reranker-base | 278M | English | Very good |
-| **bge-reranker-v2-m3** | 568M | Multilingual | Excellent |
-| Cohere Rerank v3 | API | Multilingual | Excellent |
-| Jina Reranker v2 | Various | Multilingual (8k+ tokens) | Very good |
+| Model | Size / access | Context | License or price | Notes |
+|-------|---------------|---------|------------------|-------|
+| ms-marco-MiniLM-L-6 | 22M, open | 512 | Apache 2.0 | English; CPU-friendly baseline |
+| bge-reranker-base | 278M, open | 512 | MIT | English |
+| **bge-reranker-v2-m3** | 568M, open | 512 in the model card examples (8K base) | Apache 2.0 | Multilingual workhorse |
+| **Cohere Rerank 4** (`rerank-v4.0-fast` / `-pro`) | API | 32K | Usage-based API | Announced December 2025; successor to Rerank 3.5 (4,096-token context) |
+| **Voyage rerank-3 / rerank-3-lite** | API | 32K | $0.05 / $0.02 per 1M tokens | September 30, 2026; same prices and API as rerank-2.5, and score thresholds tuned on 2.5 still work |
+| **Qwen3-Reranker-8B** | 8B, open | 32K | Apache 2.0 | Strong open text reranker (June 2025) |
+| **Qwen3-VL-Reranker-2B / 8B** | Open | 32K | Apache 2.0 | Multimodal (text, images, page screenshots), January 2026 |
+| jina-reranker-v3.5 | 0.6B, open | Long | CC BY-NC 4.0 (non-commercial) | Listwise reranker on Qwen3-0.6B; commercial use goes through Jina's API or a separate license |
+| LightOn-rerank | 0.8B / 2B / 4B, open | Long | Check model card | Pointwise and listwise variants on Qwen3.5 backbones (July 2026) |
+
+Voyage reports rerank-3 beating rerank-2.5 by 0.96% overall and 3.35% on long documents, and Cohere Rerank v4.0 Pro by 2.72% overall and 13.84% on long documents (vendor-reported, 95 datasets plus MAIR). Read that as a signal about where gains now concentrate (long documents and instruction-following relevance) rather than as a neutral ranking.
 
 **The "Lost in the Middle" Fix**: Rerankers are trained to prioritize relevant information regardless of its position in the chunk, ensuring that "middle" data is scored correctly before being sent to the final LLM.
 
@@ -158,7 +164,7 @@ def rerank(query: str, documents: list[str], top_k: int = 5) -> list[tuple[str, 
 ```python
 import cohere
 
-co = cohere.Client(api_key="...")
+co = cohere.ClientV2()  # reads CO_API_KEY from the environment
 
 def cohere_rerank(
     query: str,
@@ -166,16 +172,16 @@ def cohere_rerank(
     top_k: int = 5
 ) -> list[dict]:
     response = co.rerank(
-        model="rerank-english-v3.0",
+        model="rerank-v4.0-pro",  # or "rerank-v4.0-fast" for lower latency
         query=query,
         documents=documents,
         top_n=top_k,
-        return_documents=True
     )
 
+    # v2 results carry index and relevance_score; map back to the input list
     return [
         {
-            "text": result.document.text,
+            "text": documents[result.index],
             "score": result.relevance_score,
             "index": result.index
         }
@@ -187,12 +193,14 @@ def cohere_rerank(
 
 | Use Case | Recommended Model | Notes |
 |----------|-------------------|-------|
-| English, self-hosted | bge-reranker-base | Good balance |
-| Multilingual | bge-reranker-v2-m3 | Best open source |
-| Low latency | MiniLM-L-6 | 4x faster |
-| Highest quality | Cohere Rerank v3 | API, costly at scale |
-| Large batches | Jina Reranker | Good throughput |
-| Long queries (8k+) | Jina Reranker v2 | Handles long context |
+| English, self-hosted, CPU | bge-reranker-base or MiniLM-L-6 | MiniLM is ~4x faster at lower quality |
+| Multilingual, self-hosted | bge-reranker-v2-m3 or Qwen3-Reranker | Qwen3 for long inputs if you have GPUs |
+| Highest quality, managed | Cohere Rerank 4 Pro or Voyage rerank-3 | Benchmark both on your data; vendor numbers disagree |
+| Cost-sensitive managed | Voyage rerank-3-lite or Cohere Rerank 4 Fast | rerank-3-lite is $0.02 per 1M tokens |
+| Long documents or tool outputs (8K+) | Any 32K reranker (Cohere Rerank 4, Voyage rerank-3, Qwen3) | Truncation is no longer the constraint; tokens per pair are the cost |
+| Page screenshots, charts | Qwen3-VL-Reranker | Apache 2.0, multimodal |
+
+**Cost sketch:** reranking 50 candidates of ~500 tokens is ~25K tokens per query. At Voyage rerank-3's $0.05 per 1M tokens that is about $0.00125 per query, or ~$1,250 a day at 1M queries. Per-token pricing means long chunks and deep candidate lists cost linearly more, so candidate depth and chunk length are cost levers, not just latency levers.
 
 ---
 
@@ -388,7 +396,7 @@ LLMs can score relevance but are expensive:
 def llm_rerank(
     query: str,
     documents: list[str],
-    model: str = "gpt-4o-mini"
+    model: str = "gpt-6-luna"
 ) -> list[tuple[str, float]]:
     prompt = f"""Rate the relevance of each document to the query.
 Query: {query}
@@ -416,6 +424,8 @@ Format: DOC_NUM: SCORE
 - Slower (1-3s vs 100ms)
 - Non-deterministic
 
+**What the numbers say:** "The Embedder's Dilemma" (arXiv 2608.12875, August 2026) put 10 LLMs against 26 embedding models on 37 MTEB-style tasks. The best LLM tied the best embedder in aggregate (77.6 vs 77.2) at up to 1,431x the cost; LLMs led on reasoning-heavy retrieval, embedders on classification. Reasoning tokens were 28% to 81% of LLM cost, and lower reasoning budgets usually kept retrieval quality. Two rules follow: use an LLM only on the final handful of candidates for queries that need reasoning, and run it at the lowest effort setting that holds quality on your eval set.
+
 ### Listwise vs Pointwise LLM Reranking
 
 **Pointwise:** Score each document independently
@@ -435,7 +445,7 @@ C: [doc3]
 Output order: _
 ```
 
-**Listwise is often better** because the LLM can compare documents directly. Frontier models (like o1-mini or Sonnet 3.7) are extremely good at this, but it adds 1-2s of latency. Only used for high-stakes enterprise search (Legal, Medical).
+**Listwise is often better** because the LLM can compare documents directly. Small current models (GPT-6 Luna, Claude Haiku 4.5) make listwise ranking cheap enough to try at low effort, but check quality on your eval set, and it still adds 1-2s of latency, so reserve it for high-stakes enterprise search (legal, medical). Dedicated listwise rerankers (jina-reranker-v3.5, LightOn-rerank's listwise variants) give you the cross-document comparison at cross-encoder latency.
 
 ### Sliding Window for Many Documents
 
@@ -467,10 +477,10 @@ def sliding_window_rerank(
 
 ## SLM Distillation
 
-To solve the latency problem of LLM-based reranking, we now use **Distilled Small Language Models (SLMs)**.
+To cut the latency of LLM-based reranking, distill the LLM's judgments into a **small cross-encoder (SLM)**.
 
-- **Process**: Take a giant model (e.g., GPT-5.2), have it rerank 1 million pairs, and use those labels to "distill" a tiny 0.1B parameter model.
-- **Result**: You get 95% of the reranking quality of a giant model with the latency of a standard CPU lookup (< 10ms).
+- **Process**: Take a frontier model, have it rerank 1 million pairs, and use those labels to "distill" a tiny 0.1B parameter model. Check the provider's terms on training models with its outputs before you do this with a commercial API.
+- **Result**: The student runs at cross-encoder latency (100-200ms for 50 candidates in this chapter's budgets, versus 1-3s for an LLM pass) and keeps much of the teacher's ranking quality on in-domain queries. How much is corpus-specific, and the gap widens out of domain, so compare NDCG@10 against the teacher on your golden set before retiring the LLM path.
 - **Production pattern:** Use cross-encoder normally, LLM for fallback on low-confidence reranking scores.
 
 ---
@@ -503,6 +513,10 @@ class OptimizedReranker:
 - ONNX export: 1.5-2x speedup
 - TensorRT: 2-3x speedup (NVIDIA)
 - Model distillation: 4x speedup with quality tradeoff
+
+### After the Reranker: Diversity and Business Rules
+
+A reranker scores each candidate independently of the others, so three near-identical chunks from one source can take the top three slots. Apply diversity (MMR) and business rules (freshness decay, "prefer official docs") **after** relevance scoring, not before, or the reranker will undo them. Some engines now do this in-database: Weaviate 1.39 made MMR and a Boost API (promote or demote by filter, property, time decay or numeric decay) GA, and Milvus 3.0's Function Chain composes rescoring and reranking stages server-side.
 
 ### Caching Reranker Results
 
@@ -564,7 +578,7 @@ def rerank_with_fallback(
 ### Q: Why is a Cross-Encoder fundamentally more accurate than a Bi-Encoder?
 
 **Strong answer:**
-A Bi-Encoder creates a single, static vector representation for a document *before* any query is known. This loses the specific relationship between different parts of the text. A Cross-Encoder takes both the query and the document as a single input pair and uses the **Attention Mechanism** to compare them. It can see how specific words in the query change the meaning of words in the document (late interaction), allowing for much more nuanced relevance scoring than a simple mathematical similarity of two fixed vectors.
+A Bi-Encoder creates a single, static vector representation for a document *before* any query is known. This loses the specific relationship between different parts of the text. A Cross-Encoder takes both the query and the document as a single input pair and uses the **Attention Mechanism** to compare them. It can see how specific words in the query change the meaning of words in the document at every layer (full cross-attention, not ColBERT-style late interaction), allowing for much more nuanced relevance scoring than a simple mathematical similarity of two fixed vectors.
 
 **In practice:** Use bi-encoder for first-stage retrieval (speed), cross-encoder for reranking (quality). This gives the best of both.
 
@@ -613,7 +627,7 @@ LLM reranking makes sense when:
 ### Q: How do you handle reranking for extremely long queries (e.g., a whole paragraph)?
 
 **Strong answer:**
-Long queries present a "Token Budget" problem for cross-encoders, which often have 512 or 1024 token limits. The common fixes are **Sliding Window Reranking** or **Query Summarization**. Alternatively, use specialized models like **Jina-Reranker-v2** that handle 8k+ tokens. A "First-Pass Rerank" with a fast short-context model followed by a "Second-Pass Rerank" on the top 5 candidates using a high-context LLM is also common.
+Classic BERT-size cross-encoders (MiniLM, bge-reranker-base) cap at 512 tokens, so long queries and long chunks get truncated. The old fixes were **Sliding Window Reranking** or **Query Summarization**. Current rerankers changed the constraint: Cohere Rerank 4, Voyage rerank-3 and the Qwen3 rerankers take 32K tokens, so the problem is now cost and latency per pair rather than truncation, since per-token pricing and attention cost both grow with input length. My pattern: a fast first-pass rerank over 50 candidates with truncated chunks, then a second pass over the top 5 to 10 with full-length text on a 32K reranker. This matters most in agentic RAG, where the "documents" are long tool outputs and the query is a paragraph of natural-language relevance criteria, which is exactly where Voyage reports rerank-3's largest gains (long documents and the MAIR instruction-following suite, vendor-reported).
 
 ---
 
@@ -623,6 +637,8 @@ Long queries present a "Token Budget" problem for cross-encoders, which often ha
 - Nogueira et al. "Multi-Stage Document Ranking with BERT" (2019/2025 update)
 - BAAI BGE Reranker: https://huggingface.co/BAAI/bge-reranker-base
 - Cohere Rerank: https://docs.cohere.com/docs/rerank
+- [Voyage AI. "rerank-3" (Sep 2026)](https://blog.voyageai.com/2026/09/30/rerank-3/)
+- ["The Embedder's Dilemma" (arXiv 2608.12875, Aug 2026)](https://arxiv.org/abs/2608.12875)
 - Sun et al. "Is ChatGPT Good at Search? Investigating Large Language Models as Re-Ranking Agents" (2023)
 
 ---

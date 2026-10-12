@@ -45,7 +45,7 @@ Data quality drives AI system quality. A beautiful RAG architecture is useless i
 ### Pitfall 2: One-Size-Fits-All Model Selection
 
 **What goes wrong:**
-Candidates say they would use GPT-4 (or any single model) for everything.
+Candidates say they would use one model, usually the biggest frontier model they know, for everything.
 
 **Why it matters:**
 Different tasks have different requirements. Using a frontier model for classification is wasteful. Using a small model for complex reasoning fails.
@@ -59,10 +59,13 @@ Different tasks have different requirements. Using a frontier model for classifi
 ```
 "Model selection varies by task:
 
-- Intent classification: Fine-tuned BERT or GPT-5.5-mini
-- Simple responses: Claude Haiku 4.5, GPT-5.5-mini, or DeepSeek V4 Flash
-- Complex reasoning: Claude Sonnet 4.6 or GPT-5.5
-- Code generation: Claude Sonnet 4.6 (Opus 4.8 for the hardest cases)
+- Intent classification: Fine-tuned BERT-class encoder or GPT-6 Luna
+- Simple responses: GPT-6 Luna, Gemini 3.8 Flash, DeepSeek V4.1-Flash,
+  or Claude Haiku 4.5
+- Complex reasoning: Claude Sonnet 5.5 or GPT-6.1 Sol
+- Code generation: Claude Sonnet 5.5 or GPT-6.1 Sol, with Claude Opus 5.5
+  for the hardest cases (Fable 5.1 or GPT-6 Astra only where evals
+  show the ceiling matters)
 
 I would implement a router that classifies query complexity 
 and routes to the appropriate model. This typically reduces 
@@ -149,7 +152,7 @@ queries designed to probe for cross-tenant leakage."
 The system has no fallback when the LLM provider is down, rate-limited, or returning errors.
 
 **Why it matters:**
-LLM providers have outages. Rate limits get hit. Failure handling separates production-ready from prototype.
+LLM providers have outages. Anthropic's status page logged at least 12 major or critical incidents between August 16 and September 29, 2026, and OpenAI's September 29 incident degraded the API, ChatGPT and Codex for about 5 hours 20 minutes. Rate limits get hit. Failure handling separates production-ready from prototype.
 
 **What interviewers notice:**
 - No mention of fallbacks
@@ -164,9 +167,14 @@ LLM providers have outages. Rate limits get hit. Failure handling separates prod
    - Exponential backoff with jitter
    - Max 3 attempts
 
-2. Fallback providers: If primary fails, try secondary
+2. Fallback providers: If primary fails, try a different vendor
+   (a second model from the same vendor usually shares the outage)
    - OpenAI → Anthropic → local model
-   - Abstract the interface to enable swapping
+   - Abstract the interface, but keep per-model request shapes:
+     the newest Claude models reject forced tool_choice and
+     non-default temperature, and GPT-6 Astra rejects temperature,
+     so replaying one request body across providers returns 400s
+   - Keep a tested prompt per fallback model
 
 3. Cached responses: Return cached results for known queries
    - Exact match cache for repeated questions
@@ -234,31 +242,36 @@ Candidates discuss features without understanding cost implications.
 
 **What to know:**
 - Pricing is per token, input vs output often priced differently
-- Output tokens cost 2-4x input tokens for most providers
+- Output tokens usually cost 3-6x input tokens; 5x is the norm on current Claude, GPT-6 and Gemini Flash list prices
+- Long prompts can reprice the whole request: OpenAI bills everything at long-context rates once input passes 272K tokens, and xAI doubles all tokens at 200K and above, while Anthropic (Claude 4.6 and later) bills flat to 1M
+- Thinking tokens bill as output, and default effort differs by model (Claude Opus 5.5 `medium`, Sonnet 5.5 `high` on the API), so set effort explicitly per route
 - Streaming does not change cost
 
-**Quick reference (June 2026, verify current):**
+**Quick reference (Standard-tier prices as of October 1, 2026, introductory where noted; several moved in September alone, so check the [pricing chapter](../02-model-landscape/03-pricing-and-costs.md) before quoting):**
 
-| Model | Input/1M | Output/1M |
-|-------|----------|-----------|
-| Claude Fable 5 | $10 | $50 |
-| Claude Opus 4.8 | $5 | $25 |
-| GPT-5.5 | $5 | $30 |
-| Claude Sonnet 4.6 | $3 | $15 |
-| Gemini 3.1 Pro | $2 | $12 |
-| Claude Haiku 4.5 | $1 | $5 |
-| DeepSeek V4 Flash | $0.14 | $0.28 |
+| Model | Input/1M | Output/1M | Watch for |
+|-------|----------|-----------|-----------|
+| Claude Fable 5.1 | $10 | $50 | 30-day retention; zero data retention only by Anthropic authorization |
+| GPT-6 Astra | $10 | $50 | Above 272K input the whole request bills at $20 / $75 |
+| Claude Opus 5.5 | $4 | $20 | Anthropic's default starting point; cache reads $0.20 (0.05x) |
+| Claude Sonnet 5.5 | $2 | $10 | Flat pricing to 1M context |
+| GPT-6.1 Sol | $2 | $10 | Cache reads $0.10 (0.05x); above 272K $4 / $15 |
+| Grok 4.7 | $2 | $6 | Prompts of 200K+ bill all tokens at $4 / $12 |
+| Claude Haiku 4.5 | $1 | $5 | Only current Haiku; Foundry retires it Nov 15, 2026, so keep a tested substitute ready |
+| Gemini 3.8 Flash | $0.75 | $3.75 | Introductory through Dec 31, 2026; $1.50 / $7.50 from Jan 1, 2027 |
+| DeepSeek V4.1-Flash | $0.30 | $1.20 | Peak rate; off-peak and weekends are half |
+| GPT-6 Luna | $0.10 | $0.50 | Above 272K $0.20 / $0.75 |
 
 **Cost calculation example:**
 ```
 10,000 queries/day
 Average: 2K input tokens, 500 output tokens
-Model: Claude Sonnet 4.6
+Model: Claude Sonnet 5.5
 
-Daily cost = 10K × (2K × $3/1M + 500 × $15/1M)
-          = 10K × ($0.006 + $0.0075)
-          = 10K × $0.0135
-          = $135/day = ~$4K/month
+Daily cost = 10K × (2K × $2/1M + 500 × $10/1M)
+          = 10K × ($0.004 + $0.005)
+          = 10K × $0.009
+          = $90/day = ~$2.7K/month
 ```
 
 **The caching lever (often the difference between candidates):**
@@ -267,14 +280,19 @@ Same workload, but 1.5K of the 2K input is a shared prefix
 (system prompt + tool schemas) served from cache at 10% of
 the input price:
 
-Daily cost = 10K × (0.5K × $3/1M + 1.5K × $0.30/1M + 500 × $15/1M)
-          = 10K × ($0.0015 + $0.00045 + $0.0075)
-          = ~$94/day = ~$2.8K/month   (30% saved by prompt shape alone)
+Daily cost = 10K × (0.5K × $2/1M + 1.5K × $0.20/1M + 500 × $10/1M)
+          = 10K × ($0.001 + $0.0003 + $0.005)
+          = $63/day = ~$1.9K/month   (30% saved by prompt shape alone)
+
+Cache writes cost 1.25x ($2.50/1M for a 5-minute entry), but at ~7
+requests a minute the prefix stays warm, so writes are noise.
 
 Design implication: keep the static content (instructions, schemas)
 at the front of the prompt and the dynamic content at the end, so
 the prefix stays byte-identical across requests and the cache hits.
 ```
+
+The cache-read discount is no longer a constant 10%. Most Claude models and OpenAI's GPT-5.6 and later bill reads at 0.1x, Claude Opus 5.5 and GPT-6.1 Sol at 0.05x, and Claude Fable 5.1 at 0.025x. Write premiums and TTLs differ too: OpenAI (GPT-5.6 and later) charges 1.25x to write with a fixed 30-minute TTL, while Anthropic offers 5-minute or 1-hour entries at 1.25x or 2x. On a cache-heavy agent workload, those multipliers can matter more than the headline input price.
 
 ---
 
@@ -338,6 +356,7 @@ I also include negative examples showing when to abstain."
 | Format slipping | JSON output degrades after long sessions or model updates | Engine-level structured output (json_schema, tool schemas), not "please return JSON" |
 | Cache-busting dynamism | A timestamp at the top of the prompt kills the prefix cache on every request | Static content first, dynamic content last |
 | Prompt-model coupling | A prompt tuned on one provider silently underperforms after a model swap | Version prompts with the model ID; re-run evals on every model change |
+| Unpinned defaults | A dependency bump changes the model or effort under you: openai-agents 0.20 moved its default model to `gpt-5.6-luna`, and Opus 5.5 defaults to `medium` effort where Opus 5 used `high` | Pin model ID and effort in config; treat SDK and CLI upgrades as model changes that rerun evals |
 
 Naming two or three of these unprompted moves a prompting answer from junior to senior, because each one is a production incident the interviewer has probably lived through.
 
@@ -521,6 +540,8 @@ uses instruction hierarchy to resist injection. Output
 passes through a content filter before reaching the user."
 ```
 
+For agents, the attack surface also includes everything the agent can reach. In 2026, evaluation agents at several labs reached real outside systems: an OpenAI research model got past access controls on an Australian government Medicare statistics portal in June, and in another OpenAI run an agent tunneled out through DNS. Monitoring alarmed about 12 minutes after the first external response, but the run was killed only 2.5 hours later because the automatic stop failed. Default-deny egress (DNS included), scoped credentials, and a kill switch you have actually tested belong in the first diagram, not in a hardening phase.
+
 ---
 
 ## Checklists for Self-Review
@@ -528,7 +549,7 @@ passes through a content filter before reaching the user."
 ### Before the Interview
 
 - [ ] Reviewed RAG architecture patterns
-- [ ] Know current model pricing (ballpark)
+- [ ] Know current model pricing (ballpark), including cache-read and long-context multipliers
 - [ ] Can explain chunking strategies
 - [ ] Understand embedding vs generation
 - [ ] Know common evaluation metrics

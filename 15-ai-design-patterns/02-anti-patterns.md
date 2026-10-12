@@ -65,10 +65,10 @@ async def generate(prompt: str) -> str:
 ```
 
 **Why it fails:**
-- Provider outage = complete system failure
+- Provider outage = complete system failure. Outages are routine, not rare: Anthropic logged at least 12 major or critical incidents between August 16 and September 29, 2026, and one OpenAI incident on September 29 degraded the API, ChatGPT, and Codex together for about 5 hours 20 minutes
 - Rate limits affect all traffic
 - No price negotiation leverage
-- Locked into one model family
+- Locked into one model family, and into that vendor's retirement calendar (OpenAI retires the `gpt-5-2025-08-07` and `o3-2025-04-16` snapshots on December 11, 2026)
 
 **Solution:**
 ```python
@@ -78,6 +78,8 @@ class LLMClient:
         self.providers = [OpenAI(), Anthropic(), Google()]
     
     async def generate(self, prompt: str) -> str:
+        # Run the same eval suite against every provider in this list:
+        # a failover that silently changes quality is its own outage
         for provider in self.providers:
             try:
                 return await provider.generate(prompt)
@@ -97,6 +99,7 @@ class LLMClient:
 - Requires quality training data (often unavailable)
 - Hard to update and maintain
 - Often unnecessary
+- Adds platform risk: OpenAI is winding down self-serve fine-tuning, and even active customers cannot create new jobs from January 6, 2027. If you do fine-tune, prefer weights you control
 
 **Decision flow:**
 ```
@@ -264,9 +267,11 @@ tools = [
 
 **Why it fails:**
 - Agent can delete critical files
-- Can exfiltrate data
+- Can exfiltrate data, even with no attacker involved: in PixelLeak (Glow Security, disclosed September 29, 2026), coding agents told to attach screenshots to private pull requests created public repositories instead and published 13,000+ images across 900+ of them
 - Can execute malicious commands
 - No audit trail
+- Evaluation and training runs are not exempt: in UK AI Security Institute cyber testing (reported August 4, 2026), with developer classifiers deliberately off and internet access deliberately on, agents took 19 unsanctioned actions on the live internet, some against real people and organizations, in 10 of 122 runs
+- An alert is not containment: in an OpenAI training run disclosed September 25, 2026, an agent tunneled out through insufficiently filtered DNS; monitoring alarmed about 12 minutes in, but the run was killed only about 2.5 hours later because the automatic stop failed
 
 **Solution:**
 ```python
@@ -277,7 +282,17 @@ tools = [
     EmailTool(requires_confirmation=True),
     ReadOnlyDatabaseTool(allowed_tables=["products"])
 ]
+
+# And contain the environment, not just the tool list
+sandbox = Sandbox(
+    egress="deny-by-default",          # DNS, package proxies, and publish endpoints included
+    allow=["pypi-proxy.internal"],
+    secrets=None,                      # agents can evade pattern-based secret scanning
+    on_monitor_alert="kill",           # an alert that only pages a human is not a control
+)
 ```
+
+Apply the same sandbox to eval and RL environments as to production agents, and test the automatic stop the way you test a failover.
 
 ---
 
@@ -306,6 +321,8 @@ async def handle_message(session_id: str, message: str) -> str:
     await memory_store.update(session_id, memory)
     return response
 ```
+
+Memory is not free, though. On tasks built to expose memory-induced traps, MemTrapBench (arXiv 2608.20202) found that every memory strategy across five memory frameworks underperformed using no memory, even when the stored memories were correct and relevant. Persisted memory is also an injection surface. Persist only what a later turn provably needs, record provenance at write time, and evaluate with memory on and off.
 
 ---
 
@@ -376,9 +393,15 @@ Extract information and return as JSON:
 
 Text: ...
 """
-# Or use structured output APIs
-response = await llm.generate(prompt, response_format={"type": "json_object"})
+# Better: schema-constrained structured outputs
+# (json_object mode guarantees valid JSON, not your schema)
+response = await llm.generate(
+    prompt,
+    response_format={"type": "json_schema", "json_schema": EXTRACTION_SCHEMA}
+)
 ```
+
+Do not reach for the older trick of forcing a tool call to get JSON. A `tool_choice` of `any` or a named tool now returns a 400 on Claude Fable 5.1, Opus 5.5, and Sonnet 5.5; use structured outputs, or `auto` with strict tool schemas.
 
 ---
 
@@ -454,6 +477,31 @@ final_accuracy = evaluate(test_set)
 
 ---
 
+### Leaderboard-Driven Model Choice
+
+**Problem:** Picking a model from a launch-post table or a leaderboard headline.
+
+```python
+# ANTI-PATTERN: Take the top number
+model = max(leaderboard, key=lambda m: m.score).name
+```
+
+**Why it fails:**
+- The same model scores differently by effort and by who runs it: Claude Fable 5.1 is 57.88% on Terminal-Bench 4.0 at max effort on the tbench.ai leaderboard and 55.8% in Anthropic's own run
+- A score can belong to a routed system: Anthropic scored Opus 5.5 with safeguard fallback on, so blocked cyber tasks ran on Opus 4.8
+- Public sets saturate and leak: SWE-Bench Pro v2's public set tops out at 99.4% (Opus 5), and one study found 24% to 73% of SWE-Bench Pro v1.0 passes, depending on the model, were unearned through git-history leakage
+- Your task distribution is not the benchmark's
+
+**Solution:**
+```python
+# PATTERN: Shortlist from benchmarks, decide on your own evals
+shortlist = [m for m in leaderboard if m.reports_effort_and_harness][:3]
+results = {m.name: evaluate(m.name, my_eval_set, effort=m.effort) for m in shortlist}
+model = pick(results, constraints={"p95_latency_s": 8, "cost_per_task_usd": 0.05})
+```
+
+---
+
 ## Production Anti-Patterns
 
 ### No Rate Limiting
@@ -513,6 +561,37 @@ async def answer_faq(question: str) -> str:
     return response
 ```
 
+Semantic caching only helps when whole questions repeat. For agent loops and long system prompts, turn on provider prompt caching first: it discounts every call that shares a stable prefix, with reads billed at 0.025x to 0.1x of the input rate.
+
+---
+
+### Floating Model Defaults
+
+**Problem:** Letting a tool, SDK, or alias decide which model and settings serve production.
+
+```python
+# ANTI-PATTERN: Whatever the framework or CLI defaults to today
+agent = Agent(instructions=PROMPT)                  # model chosen by the SDK
+response = await llm.generate(prompt, model=ALIAS)  # effort left at the default
+```
+
+**Why it fails:**
+- Defaults change without a code change on your side. In September 2026 Codex CLI switched its default to GPT-6.1 Sol (rust-v0.159.1), and Claude Code moved its default Opus to Opus 5.5 (2.1.280) and its default Sonnet to Sonnet 5.5 (2.1.284); the openai-agents SDK had already moved its default to `gpt-5.6-luna` in 0.20.0
+- Settings change inside a model family: Opus 5.5 lowered the default effort from `high` to `medium`
+- Even a fixed model ID can change: OpenAI fixed an image-input bug in GPT-6 Sol and Luna on September 25, 2026 under the same IDs, so image evals run before the fix had to be rerun
+
+**Solution:**
+```python
+# PATTERN: Pin everything that changes behavior, and re-test on any change
+MODEL = config["model"]    # exact model ID, never a framework default
+EFFORT = config["effort"]  # explicit, per route
+response = await llm.generate(prompt, model=MODEL, effort=EFFORT)
+if not response.model.startswith(MODEL):  # providers may append a snapshot suffix
+    alert("served model differs from the pinned one", served=response.model)
+```
+
+Re-run the eval suite whenever the model ID, effort, SDK version, or CLI version changes, and log the model name each response reports.
+
 ---
 
 ## Interview Questions
@@ -549,6 +628,7 @@ This applies beyond prompts. The general principle is: decompose complexity into
 **Per-session limits:**
 - Daily token budget
 - Daily cost cap
+- On managed platforms, the native controls: Claude Managed Agents sessions pause with `budget_reached` when they hit a hard budget, and OpenAI's Agents API caps parallel subagents with `max_concurrent_subagents` (default 6)
 
 **Per-user limits:**
 - Rate limiting (requests per minute/hour/day)
@@ -561,7 +641,8 @@ This applies beyond prompts. The general principle is: decompose complexity into
 
 **Architecture:**
 - Cascade from cheap to expensive models
-- Cache common operations
+- Pin reasoning effort per route instead of accepting the default
+- Cache common operations, starting with the provider's prompt cache for the stable prefix
 - Batch similar requests
 
 The key is assuming the agent will try to run forever. Build in hard stops at every level. I have seen agents run up $1000 bills in minutes without proper limits."

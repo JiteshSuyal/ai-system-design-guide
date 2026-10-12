@@ -11,8 +11,9 @@ This chapter provides detailed walkthroughs of system design exercises commonly 
 - [Exercise 5: Real-Time Content Moderation](#exercise-5-real-time-content-moderation)
 - [Exercise 6: Multi-Tenant AI Platform](#exercise-6-multi-tenant-ai-platform)
 - [Exercise 7: Semantic Search at Scale](#exercise-7-semantic-search-at-scale)
-- [Exercise 8: Evaluation Pipeline for a Production LLM Product](#exercise-8-evaluation-pipeline-for-a-production-llm-product) ⭐ *NEW*
-- [Exercise 9: Memory and State for a Long-Running Agent](#exercise-9-memory-and-state-for-a-long-running-agent) ⭐ *NEW*
+- [Exercise 8: Evaluation Pipeline for a Production LLM Product](#exercise-8-evaluation-pipeline-for-a-production-llm-product)
+- [Exercise 9: Memory and State for a Long-Running Agent](#exercise-9-memory-and-state-for-a-long-running-agent)
+- [Exercise 10: Inference Batching Service on a Single GPU](#exercise-10-inference-batching-service-on-a-single-gpu) ⭐ *NEW*
 - [Tips for Whiteboard Exercises](#tips-for-whiteboard-exercises)
 
 ---
@@ -148,8 +149,17 @@ Each chunk inherits parent document permissions.
 **4. Embedding:**
 ```
 Multilingual requirement suggests:
-- Model: Cohere embed-v3 (multilingual, good quality)
-- Alternative: OpenAI text-embedding-3-large
+- Model: Cohere Embed 5 (embed-v5.0-pro: 100+ languages, 128K
+  context, $0.12/1M text tokens)
+- Alternatives: voyage-4-large ($0.12/1M) or gemini-embedding-2;
+  self-hosted Nemotron 3 Embed 8B (NVIDIA reports #1 on RTEB
+  Multilingual) if text cannot leave the VPC
+- Decide with a bake-off on real Spanish and Mandarin queries,
+  not leaderboard averages
+
+Backfill cost: 50M chunks × ~512 tokens ≈ 26B tokens, about $3K
+at $0.12/1M. Re-embedding is cheap; the re-index time is what
+you plan around.
 
 Batch embedding:
 - Process in batches of 100 chunks
@@ -164,7 +174,10 @@ Pinecone or Qdrant for this scale.
 Selection criteria:
 - Metadata filtering: Critical for permissions
 - Scale: 10M docs × 5 chunks = 50M vectors
-- Hybrid search: Needed for keyword queries
+- Hybrid search: Needed for keyword queries. Pinecone's full-text
+  search (GA September 2026) ranks by one scoring type per query,
+  so run BM25 and vector searches separately and fuse client-side
+  with RRF
 
 Schema:
 - Vector: embedding
@@ -226,9 +239,11 @@ def retrieve(query: str, user_id: str, top_k: int = 20) -> List[Chunk]:
 
 **3. Reranking:**
 ```
-Rerank top-20 to get top-5 with cross-encoder.
-Model: bge-reranker-v2-m3 (multilingual)
-Latency budget: ~100ms
+Rerank top-20 to get top-5 with a cross-encoder.
+Model: a hosted 32K-context reranker (Cohere Rerank 4 Fast, Voyage
+rerank-3) or self-hosted bge-reranker-v2-m3 (multilingual, open
+weights); verify on Spanish and Mandarin queries before choosing
+Latency budget: ~150ms (matches the p95 budget below)
 ```
 
 **4. Generation:**
@@ -249,12 +264,14 @@ QUESTION: {query}
     
     response = llm.generate(
         prompt=prompt,
-        model="gpt-4o",
-        temperature=0.1
+        model="claude-sonnet-5-5",  # pinned ID; the fallback route is another vendor
+        effort="low",               # API default is "high"; unset, it eats the latency budget
     )
     
     return format_with_source_links(response, chunks)
 ```
+
+No `temperature` here: the newest Claude models return a 400 for non-default sampling values and GPT-6 Astra does not accept them. Grounding comes from the prompt, retrieval and citation checks, not from sampling settings.
 
 #### Scaling and Reliability
 
@@ -456,16 +473,29 @@ review_types = [
 
 3. **Model Selection:**
 ```
-Primary: Claude Sonnet 4.6 (best price-to-quality for code understanding; Opus 4.8 for the hardest reviews)
-Fallback: GPT-5.5
+Primary: Claude Sonnet 5.5 or GPT-6.1 Sol (both $2/$10 per 1M);
+  pick with a bake-off on a few hundred past PRs whose real
+  review outcomes you know
+Escalation: Claude Opus 5.5 ($4/$20) for large or
+  security-sensitive diffs
+Fallback: the other vendor's mid-tier model, with its own
+  tested prompt
 
 Specialized models:
 - Security scanning: CodeQL + LLM review
 - Style: Linters + LLM explanation
+
+Cost check (50K PRs/day, ~30K input tokens of assembled context
+and ~2K output tokens per PR, $2/$10 model):
+  50K × (30K × $2/1M + 2K × $10/1M) = 50K × $0.08
+  = $4,000/day ≈ $120K/month before caching
+Levers: cache repository conventions and shared files as a
+prefix, skip generated and vendored files, set effort per route
+(thinking tokens bill as output), escalate selectively.
 ```
 
 4. **Output Format:**
-```markdown
+````markdown
 ## Review Summary
 
 ### Critical Issues (must fix)
@@ -481,7 +511,7 @@ Specialized models:
 ### Suggestions (consider fixing)
 - **Line 78-82**: This loop could be simplified using list comprehension
 ...
-```
+````
 
 5. **Latency Strategy:**
 ```
@@ -493,6 +523,9 @@ Strategy:
 - Stream results as available
 - Cache repository conventions
 ```
+
+6. **Approval Authority:**
+The assistant comments; by default it does not approve. GitHub now lets Copilot code review submit approvals that count toward required reviews (public preview since September 2026, off by default, path-scoped by admins). If you enable anything similar, limit it to low-risk paths, never let an agent approve a PR an agent wrote, and dismiss the approval on every new push. Expect this separation-of-duties follow-up.
 
 ---
 
@@ -539,17 +572,23 @@ Confidence threshold: 0.95 for auto-routing
 ```
 Tiered extraction based on document type:
 
-Tier 1: Document AI (Textract/Azure)
+Tier 1: Document AI (Textract, Azure Document Intelligence, or a
+parsing API such as Cohere parse-v5.0 at $1.50 per 1,000 pages)
 - Good for structured forms
 - Fast and cheap
 - Returns confidence scores
 
-Tier 2: Vision LLM (Claude Opus 4.8, GPT-5.5, Gemini 3.1 Pro)
+Tier 2: Vision LLM (Claude Opus 5.5, GPT-6.1 Sol, Gemini 3.8 Flash)
 - Fallback for complex layouts
 - Better for unstructured text
 - More expensive
 
 Combine outputs and cross-validate.
+
+Pin model IDs and re-run the extraction eval on a schedule, not
+only on ID changes: OpenAI fixed an image-encoding bug that had
+degraded image understanding in GPT-6 Sol and GPT-6 Luna on
+September 25, 2026, without changing either ID.
 ```
 
 3. **Validation Rules:**
@@ -588,6 +627,10 @@ HIPAA/SOC2 requirements:
 - PHI detection and masking
 - Retention policies enforced
 - Access controls with MFA
+- Model-provider retention checked per model, not per vendor:
+  Claude Opus 5.5 and Sonnet 5.5 are available with zero data
+  retention, while Fable 5.1 requires 30-day retention unless
+  Anthropic expressly authorizes ZDR
 ```
 
 ---
@@ -772,6 +815,7 @@ usage_schema = {
     "model": "string",
     "tokens_in": "int",
     "tokens_out": "int",
+    "region": "string",       # residency route; priced higher, see below
     "latency_ms": "int",
     "cost_cents": "decimal"
 }
@@ -787,6 +831,10 @@ async def track_usage(tenant_id: str, operation: Usage):
     # Update real-time counter for rate limiting
     await redis.incr(f"usage:{tenant_id}:{today()}", operation.tokens)
 ```
+
+**Residency as a priced tier:**
+
+Enterprise tenants that need in-region processing cost more to serve. Anthropic charges 1.1x for US-only inference (`inference_geo`) on Claude 4.6 and later models, OpenAI adds 10% on its data-residency endpoints for models released since March 5, 2026, and regional Claude endpoints on Bedrock and Google Cloud carry about a 10% premium over global ones. Route only residency-bound tenants to pinned regions, record the route in every usage row, and price it into the tier instead of paying the premium on all traffic.
 
 ---
 
@@ -957,7 +1005,7 @@ Refresh: quarterly, sampled from recent traffic; archive old sets
 **2. Scoring design:**
 
 - Binary pass/fail per dimension (faithfulness, completeness, tone, safety), not 1-5 scales. Binary decisions are reproducible; Likert drifts.
-- LLM-as-judge for scale: a cheap model (Claude Haiku 4.5, GPT-5.5-mini) with a rubric and few-shot anchors per dimension.
+- LLM-as-judge for scale: a cheap model (GPT-6 Luna, Gemini 3.8 Flash, Claude Haiku 4.5) with a rubric and few-shot anchors per dimension.
 - Judge calibration: monthly agreement check against the human-graded slice. Judge-human agreement is itself a dashboard metric; below 85% agreement, the judge prompt gets fixed before any product conclusions are drawn.
 
 **3. CI gating:**
@@ -994,11 +1042,16 @@ Total: well under the 2% budget; the human slice is the
 dominant cost and it is what keeps the judge honest.
 ```
 
+**6. Tooling and portability:**
+
+Keep datasets, rubrics, judge prompts and gate thresholds in your own repo, and treat hosted eval platforms as replaceable runners. OpenAI's hosted Evals goes read-only on October 31, 2026 and shuts down November 30 (OpenAI points users to Promptfoo, which OpenAI agreed to acquire in March 2026), and LangSmith SaaS keeps extended-retention traces for at most 180 days from September 14, 2026. Quarter-over-quarter trend lines need a store you control.
+
 ### What Distinguishes Strong Candidates
 
 - They design the dataset before the scorer; a great judge on a stale dataset measures nothing.
 - They treat the judge as a system component with its own eval (calibration vs humans), not as ground truth.
 - They name eval gaming risks unprompted: dev-set overfitting, judge sycophancy, metric narrowing, silent exclusion of hard cases.
+- They keep the held-out set and reference answers unreachable from the system under test. Agents with tool access find answer keys: a September 2026 audit (arXiv 2609.34262) judged 24% to 73% of passing SWE-Bench Pro v1.0 trajectories unearned, depending on the model, mostly through git history that exposed reference solutions.
 - They link offline scores to production outcomes instead of celebrating green dashboards.
 - They quantify the eval budget and place the expensive human grading where it has the most leverage.
 
@@ -1072,11 +1125,12 @@ The conflict path matters most: "user moved from Madrid to Lisbon" must supersed
 - Each turn builds a recall query from the current intent, retrieves top-k from L2 (similarity + recency + importance weighting) and matching facts from L3.
 - A relevance gate drops weak matches rather than stuffing them in; wrong memories poison the response worse than missing ones.
 - Recall budget: a few hundred tokens of memory per turn, never a transcript dump.
+- Measure memory-on against memory-off. Even correct, relevant memories can hurt: MemTrapBench (arXiv 2608.20202, August 2026) found every memory strategy it tested underperformed the no-memory setting on its trap tasks, where correctly stored memories pulled the agent into reasoning fixation or distorted beliefs about the current task.
 
 **4. Forgetting and privacy:**
 
 - Decay: episodic entries lose retrieval weight over time unless reinforced by access.
-- Consolidation: a periodic job merges related episodes into summaries (many "billing question" episodes become one pattern note).
+- Consolidation: a periodic job merges related episodes into summaries (many "billing question" episodes become one pattern note). Vendors now ship this as an offline "dreaming" pass: Anthropic's Dreams (research preview) and Mem0's Dream (Pro and Enterprise plans).
 - GDPR deletion: per-user partition keys everywhere; deletion removes L2/L3/L4 rows and invalidates caches. Hard isolation per user; memory is never shared across tenants by similarity.
 
 **5. Scale sketch (1M users):**
@@ -1088,7 +1142,8 @@ Storage: ~thousands of L2 entries + hundreds of L3 facts per
 Write path: async after session close; queue + worker pool
 Read path: p95 < 150ms recall (ANN on a per-user slice is small)
 Cost: extraction pass on session close is the main LLM cost;
-  use a cheap model (Haiku 4.5 / V4 Flash) with a strict schema
+  use a cheap model (GPT-6 Luna, Gemini 3.8 Flash, or DeepSeek
+  V4.1-Flash) with a strict schema
 ```
 
 ### What Distinguishes Strong Candidates
@@ -1097,7 +1152,110 @@ Cost: extraction pass on session close is the main LLM cost;
 - They spend time on the write path (extraction, dedup, conflict supersession) rather than only on retrieval.
 - They treat wrong recall as worse than no recall and design the relevance gate accordingly.
 - They name memory poisoning as a security surface: untrusted content written today and trusted tomorrow needs provenance tags and review gates.
-- They mention production frameworks (Mem0, Zep, Letta) as build-vs-buy options while still being able to design from primitives.
+- They know the build-vs-buy options and how they have moved, while still being able to design from primitives. Mem0's open-source SDK has been ADD-only since v2.0 (April 2026), with merge and supersede moved to its paid Dream feature, so a conflict path like the one above stays in your code. Letta archived its MemGPT-era server in August 2026 and now keeps memory as git-backed Markdown files with no vector index by default. Zep remains a graph-based option.
+
+---
+
+## Exercise 10: Inference Batching Service on a Single GPU
+
+### Problem Statement
+
+"Design the batching layer for an LLM inference service on one GPU. Users wait synchronously for results, and a batch holds at most 100 sequences. Explain how requests are admitted, grouped, scheduled and returned, then how the design changes when traffic outgrows the GPU."
+
+Interview-prep guides report variants of this prompt from Anthropic system design rounds (Aced, formerly Exponent, September 2026; candidate-reported, not confirmed by the company). It tests whether you understand serving from the inside rather than only calling an API.
+
+### Clarifying Questions to Ask
+
+- Is this autoregressive generation or a single forward pass (embeddings, classification, scoring)? The answer changes the whole design.
+- What are the prompt and output length distributions? Prefill-heavy RAG prompts and decode-heavy chat stress different things.
+- Which SLO matters: time to first token (TTFT), inter-token latency, or end-to-end, and at what percentile?
+- Do users stream, or wait for the full response?
+- Are there priority classes or tenants? Can clients cancel?
+
+### Solution Walkthrough
+
+**1. Two regimes, two batchers:**
+
+```
+Single forward pass (embed, classify, score):
+  Dynamic batching. Flush when the batch reaches 100 OR the oldest
+  request has waited max_wait (e.g. 5-10 ms). Added latency is
+  bounded by max_wait; throughput comes from fuller batches.
+
+Autoregressive generation:
+  Static batching wastes the GPU: every slot waits for the longest
+  sequence. Use continuous (iteration-level) batching: after each
+  decode step, finished sequences leave and queued ones join.
+```
+
+**2. Architecture:**
+
+```
+Client ──► API (auth, validation, max_tokens cap)
+              │
+              ▼
+        Admission control ── 429 + Retry-After when the queue is full
+              │
+              ▼
+        Request queue (priority, deadline)
+              │
+              ▼
+        Scheduler (runs every step)
+          - admit while slots < 100 AND free KV blocks suffice
+          - chunked prefill: split long prompts so they do not
+            stall in-flight decodes
+          - on KV pressure, preempt the lowest priority sequence
+            (swap to host memory or recompute later)
+              │
+              ▼
+        GPU worker: one forward pass per step over the mixed batch
+              │
+              ▼
+        Detokenize and stream tokens back (SSE); free KV blocks on
+        completion or client disconnect
+```
+
+**3. The binding constraint is KV memory, not the 100-slot cap:**
+
+```
+Llama 3.1 8B in BF16:
+  2 × 32 layers × 8 KV heads × 128 head_dim × 2 bytes
+  = 128 KiB of KV per token
+80 GB GPU: ~16 GB of weights, leave ~50 GiB for KV ≈ 400K tokens
+
+Average context 2K tokens → ~200 sequences fit: the 100 cap binds
+Average context 8K tokens → ~50 sequences fit: memory binds first
+```
+
+So the scheduler admits by free KV blocks (PagedAttention-style paging), reserves headroom for output growth, and treats 100 per batch as a ceiling, not a target.
+
+**4. Synchronous users and backpressure:**
+
+- Stream tokens so the user's wait is TTFT, not full generation time.
+- Bound the queue by request count and by queued tokens, and shed load early with a 429. An unbounded queue turns a traffic spike into timeouts for everyone. vLLM added admission-control flags for exactly this in v0.29 (`--max-num-queued-reqs`, `--max-num-queued-tokens`).
+- Cancel on client disconnect so abandoned requests stop holding KV blocks.
+- Cap `max_tokens` per request; one runaway generation can pin memory for minutes.
+
+**5. Metrics:**
+
+TTFT and inter-token latency at p50 and p99, queue wait, batch occupancy, KV utilization, preemption rate, and **goodput**: the request rate that meets both the TTFT and inter-token SLOs. Peak tokens per second at a full batch means little if p99 TTFT misses the SLO.
+
+**6. Beyond one GPU:**
+
+- Replicas behind a prefix- and KV-aware router (llm-d's Endpoint Picker, NVIDIA Dynamo's router), so requests sharing a system prompt land where that prefix is already cached.
+- Disaggregated prefill and decode pools when prompts are long. The KV handoff is not free (about 3 GB for a 10K-token prompt on Llama 3.1 70B in BF16, roughly 65 ms at 400 Gb/s), so it pays only when it raises goodput.
+- Speculative decoding (EAGLE-3, MTP, block-diffusion drafters such as DFlash) to cut inter-token latency; benchmark it at your real concurrency, because the gain shrinks as batches fill.
+
+### What Distinguishes Strong Candidates
+
+- They ask whether the workload is generation or a single forward pass before drawing anything.
+- They size KV memory with numbers and admit by memory, not by slot count.
+- They bound the queue and say what the client sees under overload.
+- They report goodput at an SLO, not peak throughput.
+- They say they would run vLLM or SGLang in production, since both already implement continuous batching and paged KV, and use the interview to show they understand what those engines do.
+- They treat the engine as a shared-fate domain. Inputs get validated before they reach the GPU: one unauthenticated request with a negative token ID to vLLM's embeddings endpoint crashed the engine for every client until restart (CVE-2026-93592, fixed in v0.28.0). And a shared prefix cache is a cross-tenant side channel, so salt cache keys per tenant (vLLM's `cache_salt`) and keep the engine patched (v0.30.0 fixed a path that dropped the salt and reopened a prefix-cache membership oracle).
+
+**Related prompts to practice** (candidate-reported from Anthropic and OpenAI loops via the prep vendor Aced, formerly Exponent; not confirmed by the companies): a GPU credit or quota accounting system, peer-to-peer distribution of a large file (think model weights) from one bandwidth-limited source to thousands of machines, and a token-generation service at 100,000 requests per second. The same moves apply: clarify the workload, find the binding resource, bound the queue, and measure at an SLO.
 
 ---
 
@@ -1135,6 +1293,10 @@ Cost: extraction pass on session close is the main LLM cost;
 - Draw the complete high-level picture before deep diving
 - Leave time for reliability and evaluation
 - Check in with the interviewer on focus areas
+
+### Rehearse With Someone Else Drawing the Clock
+
+Solo practice catches knowledge gaps; it does not catch pacing, rambling, or the habit of defending a choice instead of weighing it. Run at least one exercise end to end with another person playing the interviewer. If you want an experienced interviewer and written feedback, book a 1:1 mock with Om on [EngineBogie](https://enginebogie.com/u/ombharatiya) or [Topmate](https://topmate.io/ombharatiya).
 
 ---
 

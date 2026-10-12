@@ -37,8 +37,8 @@ flowchart TB
         RULES --> DECISION[Final Decision]
     end
 
-    subgraph Explain["Explanation Layer"]
-        REJECT --> LLM[GPT-4o-mini<br/>Explain Decision]
+    subgraph Explain["Explanation Layer (async, off the 100ms path)"]
+        REJECT --> LLM[GPT-6 Luna<br/>Explain Decision]
         LLM --> REASON[Human-Readable Reason]
     end
 
@@ -74,8 +74,9 @@ def decide(transaction, fraud_score):
     if fraud_score < 0.3:
         return "APPROVE", None
     elif fraud_score > 0.7:
-        reason = explain_rejection(transaction, fraud_score)
-        return "REJECT", reason
+        # Return the decision now; the narrative is generated off the hot path
+        enqueue_explanation(transaction, fraud_score)
+        return "REJECT", "Model score above threshold"
     else:
         # Gray zone: apply business rules
         if check_velocity_rules(transaction):
@@ -89,7 +90,7 @@ def decide(transaction, fraud_score):
 
 **Answer:** SHAP values tell you "feature X contributed 0.3 to the score." Customers and regulators want "This transaction was flagged because it was made from a new device in a country you have never visited, for an amount 10x your usual purchase."
 
-We generate natural language explanations using the feature importance as input:
+We generate natural language explanations using the feature importance as input. The LLM call never sits inside the 100ms decision: the decision returns with a reason code, and the cardholder-facing explanation is generated asynchronously from the logged features (a small model such as GPT-6 Luna, at $0.10/$0.50 per 1M tokens, is fast and cheap enough for every decline):
 
 ```python
 prompt = f"""
@@ -109,6 +110,8 @@ Top contributing factors:
 Write a 2-sentence explanation for the cardholder.
 """
 ```
+
+A post-check rejects any explanation that cites a factor not in the supplied list and falls back to a templated reason, because an invented reason is worse in a dispute than a generic one.
 
 ---
 

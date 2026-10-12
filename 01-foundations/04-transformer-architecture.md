@@ -8,8 +8,8 @@ This chapter provides a comprehensive view of the complete transformer architect
 - [Input Processing](#input-processing)
 - [The Transformer Block](#the-transformer-block)
 - [Output Processing](#output-processing)
-- [Modern Architecture Variations (Hybrid MoE, MLA)](#mixture-of-experts-moe--hybrid-architectures)
 - [Untied vs. Tied Embeddings](#untied-vs-tied-embeddings)
+- [Modern Architecture Variations (Hybrid MoE, MLA)](#modern-architecture-variations)
 - [Scaling Properties](#scaling-properties)
 - [Architecture Comparison Table](#architecture-comparison-table)
 - [Interview Questions](#interview-questions)
@@ -19,7 +19,7 @@ This chapter provides a comprehensive view of the complete transformer architect
 
 ## Architecture Overview
 
-A decoder-only transformer (the architecture used by GPT, Claude, Llama) consists of:
+A decoder-only transformer (the architecture behind GPT-3, Llama and most open models, and widely assumed for closed frontier models whose designs are unpublished) consists of:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -117,7 +117,7 @@ position_embeddings = nn.Embedding(max_seq_len, d_model)
 x = token_embeddings + position_embeddings(positions)
 ```
 
-**Modern models (Llama, Mistral, GPT-4) use RoPE** for better length generalization.
+**Modern open models (Llama, Mistral, Qwen, DeepSeek, Gemma) use RoPE** for better length generalization, often with a scaling method such as YaRN to extend the trained window. Closed labs do not publish their position encodings.
 
 ---
 
@@ -214,7 +214,7 @@ class SwiGLUFFN(nn.Module):
         return self.down_proj(gate * up)
 ```
 
-**FFN hidden dimension** is typically 2.7x the model dimension for SwiGLU (vs 4x for standard FFN with GELU).
+**FFN hidden dimension** for SwiGLU is typically 2.7x to 3.5x the model dimension (vs 4x for a standard GELU FFN). At 8/3 (about 2.67x) the three SwiGLU matrices hold the same parameters as a two-matrix 4x FFN; Llama 2 7B uses about 2.7x, while Llama 2 70B and Llama 3 widen to 3.5x.
 
 ### RMSNorm
 
@@ -258,18 +258,6 @@ class LMHead(nn.Module):
         return self.linear(x)  # Returns logits
 ```
 
-## Untied vs. Tied Embeddings
-
-**Standard Pattern (GPT-3, Llama 2):** Weight Tying
-- Output head shares weights with input embeddings.
-- **Pro**: Saves memory (vocab_size * hidden_dim).
-- **Con**: Forces input and output latent spaces to be identical, which can be suboptimal.
-
-**2025 Frontier Pattern (Llama 3/4, GPT-5.2):** Untied Embeddings
-- Output head has its own weights.
-- **Why?**: Larger vocabularies (128k+) make the embedding table a significant portion of the model. Untying allows the output head to specialize in "predictive logic" while input embeddings focus on "semantic understanding."
-- **System Impact**: Increases parameter count but often improves perplexity for multilingual and code tasks.
-
 ### Getting Predictions
 
 ```python
@@ -281,6 +269,18 @@ next_token = sample(logits)
 logits = lm_head(hidden_states)  # All positions
 loss = cross_entropy(logits, targets)
 ```
+
+## Untied vs. Tied Embeddings
+
+**Tied (GPT-2, T5, Gemma, small Llama 3.2 and Qwen models):** Weight Tying
+- Output head shares weights with input embeddings.
+- **Pro**: Saves memory (vocab_size * hidden_dim).
+- **Con**: Forces input and output latent spaces to be identical, which can be suboptimal.
+
+**Untied (Llama 1 through 3 at 7B and above, most large open models):** Separate Output Head
+- Output head has its own weights.
+- **Why size decides it**: With 128K-262K vocabularies, the embedding table is a large share of a small model. Llama 3.2 1B's table is about 263M parameters (128,256 x 2,048), roughly a fifth of the model, and Gemma 3 1B's is about 300M (262,144 x 1,152), close to a third. Tying saves that. At 70B+ the table is a rounding error, so labs untie and let the output head specialize.
+- **System Impact**: Untying adds vocab_size x d_model parameters to load and serve; for edge models, tying is often the difference between fitting in device memory or not.
 
 ---
 
@@ -296,21 +296,24 @@ loss = cross_entropy(logits, targets)
 | Activation | SwiGLU |
 | Bias | No bias in linear layers |
 
-### Mistral Architecture
+### Mistral 7B Architecture
 
 Same as Llama but adds:
 - **Sliding Window Attention:** Each layer only attends to 4K tokens
-- Still achieves effective 32K+ context via stacking
+- Information still propagates further through stacked layers (the theoretical span grows with depth)
+- Later Mistral releases dropped pure SWA; the idea survived as interleaved sliding-window and global layers (Gemma 2 and 3, gpt-oss, and 2026 models such as MiMo-V2.6-Pro; see below)
 
 ### Mixture of Experts (MoE) & Hybrid Architectures
 
-State-of-the-art models often use **Hybrid MoE/Dense** blocks:
-- **Periodic Dense Layers**: Every few MoE layers, a dense layer is added to ensure "global" knowledge is shared across all experts.
-- **Expert Parallelism**: Distributing different experts across different GPUs. This makes **inter-node bandwidth** (NVLink/InfiniBand) a primary architecture bottleneck.
+State-of-the-art open models mix dense and sparse blocks, and increasingly mix attention types too:
+- **Dense layers plus shared experts**: Some designs keep the first layers dense (DeepSeek-V3: first 3; Tencent Hy4: first 1), others alternate dense and MoE layers (Llama 4 Maverick). Many add a **shared expert** every token passes through, alongside the routed ones (DeepSeek V4.1-Flash: 384 routed plus 1 shared, 6 routed active per token; Hy4: 256 routed plus 1 shared, top-8).
+- **Hybrid attention**: Linear-attention or sliding-window layers carry most of the depth, with a minority of full or sparse attention layers for precise recall (Qwen3.8-Flash-Next: Gated DeltaNet in 3 of every 4 layers; MiMo-V2.6-Pro: 60 sliding-window and 10 global layers). See [Attention Mechanisms](03-attention-mechanisms.md#hybrid-and-sparse-attention-in-2026-open-models).
+- **Expert Parallelism**: Distributing different experts across different GPUs. This makes **inter-node bandwidth** (NVLink/InfiniBand) and all-to-all communication a primary architecture bottleneck, and is why serving stacks now experiment with attention-FFN disaggregation (attention on one pool, experts on another).
 
 ### Multi-head Latent Attention (MLA) Integration
-The standard attention block in [DeepSeek-V3 / V4](03-attention-mechanisms.md#multi-head-latent-attention-mla) and equivalent modern architectures replaces the standard Q/K/V projections with low-rank latent compressions.
+The attention block in [DeepSeek-V3](03-attention-mechanisms.md#multi-head-latent-attention-mla) and models that adopted it (Kimi K2, Tencent Hy4) replaces the standard K/V projections with a low-rank latent compression.
 - **Architectural Shift**: The "KV Cache" is now a compressed latent representation, changing the memory/compute ratio of the entire transformer block.
+- **Beyond MLA**: DeepSeek's V4 line replaced it with a hybrid of Compressed Sparse Attention and Heavily Compressed Attention, and V4.1-Flash projects the decoder's KV from encoder states. The "KV cache" is now whatever the architecture says it is, which is why KV sizing has to start from the model card.
 
 ### Comparison of Choices
 
@@ -319,7 +322,7 @@ The standard attention block in [DeepSeek-V3 / V4](03-attention-mechanisms.md#mu
 | Norm | Post-LN | Pre-LN / RMSNorm | Training stability, speed |
 | Position | Sinusoidal/Learned | RoPE | Better extrapolation |
 | Activation | GELU | SwiGLU | Quality (+1% on benchmarks) |
-| Attention | MHA | GQA | 8x smaller KV cache |
+| Attention | MHA | GQA; MLA or hybrid layers in 2026 open flagships | 8x smaller KV cache with GQA, far more with MLA or hybrids |
 | Bias | With bias | No bias | Fewer parameters, similar quality |
 
 ---
@@ -334,18 +337,22 @@ The standard attention block in [DeepSeek-V3 / V4](03-attention-mechanisms.md#mu
 | Per layer Q/K/V | 3 * d_model * d_model (for MHA) |
 | Per layer O proj | d_model * d_model |
 | Per layer FFN | 3 * d_model * d_ff (for SwiGLU) |
-| LM head | d_model * vocab_size (often tied) |
+| LM head | d_model * vocab_size (tied in small models) |
 
 **Approximation for decoder-only:**
 ```
 Total ≈ 12 * n_layers * d_model^2 (for d_ff = 4 * d_model, MHA)
 ```
 
+That assumes a two-matrix FFN at 4x. A SwiGLU FFN at d_ff = 8/3 * d_model gives the same 8 * d_model^2 per layer; GQA and wider SwiGLU FFNs shift the split, and the embedding table adds vocab_size * d_model on top.
+
 ### Compute Requirements
 
 **Training:** FLOPs per token ≈ 6 * parameters (forward + backward)
 
 **Inference:** FLOPs per token ≈ 2 * parameters (forward only)
+
+For MoE models, use active parameters in both formulas; memory still scales with total parameters.
 
 ### Scaling Laws
 
@@ -357,7 +364,7 @@ D (data tokens) ≈ 20 * N (parameters)
 
 For a 70B model, train on ~1.4T tokens for compute-optimal training.
 
-**But:** Many modern models overtrain relative to Chinchilla for better inference efficiency. Llama was trained on 2T+ tokens.
+**But:** Many modern models overtrain relative to Chinchilla for better inference efficiency. Llama 2 was trained on 2T tokens; Llama 3 8B saw over 15T, roughly 1,900 tokens per parameter, about 95x the Chinchilla ratio.
 
 ---
 
@@ -367,11 +374,14 @@ For a 70B model, train on ~1.4T tokens for compute-optimal training.
 |-------|--------|--------|---------|-------|----------|-----|---------|
 | GPT-3 | 175B | 96 | 12288 | 96 | 96 | GELU | 2K |
 | Llama 2 70B | 70B | 80 | 8192 | 64 | 8 | SwiGLU | 4K |
-| Llama 3 405B| 405B | 126 | 16384 | 128 | 16 | SwiGLU | 128K |
-| DeepSeek V3 | 671B | 128 | 7168 | 128 | MLA | MoE | 128K |
-| Llama 4 (spec)| 1T+ | 140+ | 18432 | 192 | 24 | MoE/H | 1M+ |
+| Llama 3.1 405B | 405B | 126 | 16384 | 128 | 8 | SwiGLU | 128K |
+| DeepSeek V3 | 671B (37B active) | 61 | 7168 | 128 | MLA | MoE | 128K |
+| Llama 4 Maverick | 400B (17B active) | 48 | 5120 | 40 | 8 | MoE, alternating layers | 1M |
+| DeepSeek V4.1-Flash | 552B backbone (8B prefill / 16B decode active) | 40 (20 encoder + 20 decoder) | 5120 | 64 | Compressed (encoder-projected) | MoE, 384 + 1 shared | 1M |
 
-*Mistral uses sliding window attention for effective long context.
+Mistral 7B (not shown) uses sliding window attention in every layer; 2026 open models interleave sliding-window or linear-attention layers with global ones instead.
+
+Two trends stand out from the bottom rows: active parameters stopped growing with total parameters, and KV design (MLA, compressed, hybrid) now varies more between models than layer count or width does. GPT, Claude and Gemini configurations are not public.
 
 ---
 
@@ -426,7 +436,7 @@ Pre-norm is preferred because:
 1. Gradients flow more directly through residual connections
 2. Training is more stable, especially for deep models
 3. Less sensitive to initialization and learning rate
-4. No need for learning rate warmup
+4. Can train without the long learning-rate warmup Post-LN depends on (most runs still use a short warmup)
 
 The cost is slightly lower final performance in some benchmarks, but the training stability is worth it for large models.
 
@@ -443,14 +453,14 @@ Implementation: Each KV head is used by 8 query heads via repetition.
 **Why it matters:**
 The KV cache stores K and V for all positions during generation. For Llama 70B at 8K context:
 - MHA: 2.6 MB/token * 8K = 21 GB per request
-- GQA (8:1): ~2.6 GB per request
+- GQA (8:1): 320 KiB/token * 8K = ~2.7 GB per request
 
 8x reduction enables:
 - Larger batch sizes (more concurrent users)
 - Longer contexts
 - Lower GPU memory requirements
 
-Quality impact: Minimal. Research shows GQA achieves 99%+ of MHA quality.
+Quality impact: Small. The GQA paper found uptrained GQA close to MHA quality at close to MQA decode speed, which is why it became the default for open models.
 
 ### Q: What changed between GPT-2 and Llama 2?
 
@@ -481,6 +491,8 @@ These changes enable training larger models more stably and serving them more ef
 - Vaswani et al. "Attention Is All You Need" (2017)
 - Touvron et al. "Llama: Open and Efficient Foundation Language Models" (2023)
 - Touvron et al. "Llama 2: Open Foundation and Fine-Tuned Chat Models" (2023)
+- Llama Team, AI @ Meta. "The Llama 3 Herd of Models" (2024)
+- DeepSeek-AI. "DeepSeek-V3 Technical Report" (2024)
 - Zhang and Sennrich. "Root Mean Square Layer Normalization" (2019)
 - Shazeer. "GLU Variants Improve Transformer" (2020)
 - Su et al. "RoFormer: Enhanced Transformer with Rotary Position Embedding" (2021)

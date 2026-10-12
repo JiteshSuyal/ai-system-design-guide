@@ -1,19 +1,19 @@
 # Claude Code: The Autonomous Coding Agent
 
-Claude Code is Anthropic's **terminal-native autonomous coding agent**. Unlike IDE plugins that suggest completions, Claude Code acts as a full-stack software engineer: it reads your codebase, edits files, runs commands, executes tests, and iterates until the task is done.
+Claude Code is Anthropic's **terminal-native autonomous coding agent**. Unlike IDE plugins that started as completion engines, Claude Code was built as an agent from day one: it reads your codebase, edits files, runs commands, executes tests, and iterates until the task is done. It ships as a CLI (2.1.287 on Oct 1, 2026), IDE extensions, desktop and web sessions, and as a library through the Claude Agent SDK.
 
 ## Table of Contents
 
-- [What Claude Code Is](#what-it-is)
-- [Core Architecture](#architecture)
-- [Core Tools](#tools)
-- [The CLAUDE.md Manifest Pattern](#claude-md)
-- [Running Claude Code](#running)
-- [Sub-Agents and Parallelism](#subagents)
-- [Custom MCP Integration](#mcp-integration)
-- [Safety and Permission Model](#safety)
-- [Production Use: CI Pipelines](#production)
-- [Comparison: Claude Code vs Alternatives](#comparison)
+- [What Claude Code Is](#what-claude-code-is)
+- [Core Architecture](#core-architecture)
+- [Core Tools](#core-tools)
+- [The CLAUDE.md Manifest Pattern](#the-claudemd-manifest-pattern)
+- [Running Claude Code](#running-claude-code)
+- [Sub-Agents and Parallelism](#sub-agents-and-parallelism)
+- [Custom MCP Integration](#custom-mcp-integration)
+- [Safety and Permission Model](#safety-and-permission-model)
+- [Production Use: CI Pipelines](#production-use-ci-pipelines)
+- [Comparison: Claude Code vs Alternatives](#comparison-claude-code-vs-alternatives)
 - [Interview Questions](#interview-questions)
 - [References](#references)
 
@@ -23,14 +23,16 @@ Claude Code is Anthropic's **terminal-native autonomous coding agent**. Unlike I
 
 Released by Anthropic in early 2025, Claude Code is:
 
-- **A CLI tool**: `claude` command in your terminal
-- **An MCP-native agent**: Uses bash, text_editor, and computer tools
-- **An SDK**: Can be embedded in Python/TypeScript applications
+- **A CLI tool**: `claude` command in your terminal, plus VS Code and JetBrains extensions, a desktop app, and web sessions
+- **A tool-using agent**: Built-in tools for shell, file search and editing, web fetch, and subagents, extended through MCP servers, skills, hooks and plugins
+- **An SDK**: The same loop is embeddable in Python/TypeScript applications as the Claude Agent SDK
 - **Not just a chatbot**: It autonomously plans, implements, and verifies
 
-```
-# Install
-pip install claude-code  # or: npm install -g @anthropic-ai/claude-code
+```bash
+# Install: native installer (recommended) or npm (Node.js 22+).
+# There is no official pip package: "claude-code" on PyPI is a placeholder.
+curl -fsSL https://claude.ai/install.sh | bash
+# or: npm install -g @anthropic-ai/claude-code
 
 # Run interactively
 claude
@@ -39,56 +41,39 @@ claude
 claude -p "Add unit tests for all functions in src/utils.py" --output-format json
 ```
 
-**The key difference from Copilot/Cursor:**
-- Copilot/Cursor: Suggests code you accept or reject
-- Claude Code: **Autonomously implements the entire task**, running tests to verify
+**The key difference from Copilot/Cursor:** every major coding tool now has an agent mode (Copilot's coding agent, Cursor's agents and Projects), so the distinction is no longer "suggests versus implements." It is **where the loop runs and who controls it**: Claude Code is terminal-first and scriptable, so the same agent runs on a laptop, in CI, or on a self-hosted runner under policy you set.
 
 ---
 
 ## Core Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                   CLAUDE CODE ARCHITECTURE               │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  User Request                                           │
-│       ↓                                                 │
-│  ┌─────────────┐    ┌──────────────┐                   │
-│  │  Claude 3.7 │    │  CLAUDE.md   │                   │
-│  │   Sonnet    │ ←  │  (manifest)  │                   │
-│  │ (Extended   │    └──────────────┘                   │
-│  │  Thinking)  │                                       │
-│  └──────┬──────┘                                       │
-│         │ Tool calls                                    │
-│         ↓                                               │
-│  ┌──────────────────────────────────────┐              │
-│  │           TOOL LAYER                 │              │
-│  │  ┌─────────┐ ┌───────────┐ ┌──────┐ │              │
-│  │  │  bash   │ │text_editor│ │  MCP │ │              │
-│  │  └────┬────┘ └─────┬─────┘ └──┬───┘ │              │
-│  └───────┼────────────┼──────────┼─────┘              │
-│          │            │          │                      │
-│   Shell cmds     File edits    Custom tools             │
-│   (test, lint,   (read/write)  (DB, APIs,               │
-│    git, build)                  internal)               │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    U["User request or headless prompt"] --> L["Agent loop"]
+    M["CLAUDE.md or AGENTS.md<br/>settings, skills, hooks"] --> L
+    L <--> C["Claude model<br/>Opus 5.5 or Sonnet 5.5 by default<br/>adaptive thinking, effort setting"]
+    L --> T{"Tool layer"}
+    P["Permission layer<br/>rules, modes, auto classifier"] -.->|gates| T
+    T --> B["Bash<br/>tests, lint, git, build"]
+    T --> F["Read, Glob, Grep, Edit, Write<br/>search and surgical edits"]
+    T --> S["Subagents<br/>isolated context windows"]
+    T --> X["MCP servers and plugins<br/>DB, APIs, internal tools"]
 ```
 
-Claude Code uses **Claude 3.7 Sonnet** as its backbone model, with Extended Thinking enabled by default for complex planning tasks.
+Claude Code is **model-selectable**, and the defaults move with CLI releases: Opus 5.5 became the default Opus in 2.1.280 (Sep 22, 2026) and Sonnet 5.5 the default Sonnet in 2.1.284 (Sep 28). On these models thinking is adaptive and controlled through the effort setting; Opus 5.5 thinking cannot be switched off. Pin `--model` in CI so a CLI upgrade does not change your model, cost and behavior at the same time.
 
 ---
 
 ## Core Tools
 
-Claude Code has three native tools and supports custom MCP tools:
+Claude Code ships its own named tools (`Bash`, `Read`, `Edit`, `Write`, `Glob`, `Grep`, `WebFetch` and a subagent tool, among others). They mirror the Claude API's Anthropic-defined bash and text-editor tools, which your own code executes; their call shapes are shown below because that is what you implement if you build your own harness.
 
-### 1. `bash` — Shell Execution
+### 1. Shell Execution (`Bash`)
 
 ```python
-# Claude calls this internally:
-bash(command="pytest tests/ -v --tb=short", timeout=60)
-# Returns: stdout, stderr, exit_code
+# API-level bash tool call shape (your harness runs it and returns the output):
+bash(command="pytest tests/ -v --tb=short")
+# Timeouts and output limits are your harness's job, not a tool parameter
 ```
 
 **What Claude uses it for:**
@@ -97,15 +82,15 @@ bash(command="pytest tests/ -v --tb=short", timeout=60)
 - Build commands (`npm build`, `make`, `docker build`)
 - Package installation (`pip install`, `npm install`)
 
-The bash session is **persistent across turns** — environment variables and working directory carry over within a session.
+State handling differs by layer. The API's bash tool models one **persistent session**. Claude Code's `Bash` tool runs each command in a **separate process**: the working directory carries over (while it stays inside the project), but environment variables do not, so an `export` or a virtualenv activation in one command is gone in the next. Activate environments before launching Claude Code, or set `CLAUDE_ENV_FILE`.
 
-### 2. `text_editor` — File Operations
+### 2. File Operations (`Read`, `Edit`, `Write`; the API's text editor tool)
 
 ```python
 # Read a file
 text_editor(command="view", path="/project/src/auth.py")
 
-# Find in file
+# Read a line range
 text_editor(command="view", path="/project/src/auth.py", view_range=[1, 50])
 
 # Edit (surgical replacement)
@@ -125,18 +110,18 @@ text_editor(command="create", path="/project/tests/test_auth.py", file_text="...
 - Reduces hallucination (only changes what needs changing)
 - Enables atomic, reviewable diffs
 
-### 3. `computer` — GUI Automation (optional)
+### 3. Computer and Browser Use (optional)
 
-Full desktop control (screenshots, mouse, keyboard) — used for browser testing and UI verification. Requires sandboxed environment.
+Claude Code is terminal-first; GUI automation comes through MCP servers or the API's computer-use tools. On the Claude API, `computer_toolset_20260801` went GA on Aug 19, 2026, and Opus 5.5 and Sonnet 5.5 reject the older `computer_20251124` on the Claude API and Google Cloud (Bedrock still accepts it). A separate `browser_toolset_20260801` targets accessibility-tree element references instead of only pixels. Run either inside a disposable VM.
 
 ---
 
 ## The CLAUDE.md Manifest Pattern
 
-The `CLAUDE.md` file is the **single most important pattern** for using Claude Code productively. It injects persistent project context into every Claude Code session.
+The `CLAUDE.md` file is the **single most important pattern** for using Claude Code productively. It injects persistent project context into every Claude Code session. Since 2.1.277 (Sep 18, 2026), Claude Code also reads `AGENTS.md` when a project has no `CLAUDE.md`, so one cross-vendor instruction file can serve Claude Code, Codex, Cursor and others.
 
 ```markdown
-# CLAUDE.md — Project: E-Commerce API
+# CLAUDE.md (Project: E-Commerce API)
 
 ## Architecture
 - Python 3.11 FastAPI backend
@@ -157,9 +142,9 @@ The `CLAUDE.md` file is the **single most important pattern** for using Claude C
 - New features require tests with >80% coverage
 
 ## Forbidden Patterns
-- Do NOT use `os.system()` — use `subprocess.run()` instead
-- Do NOT commit secrets — use environment variables
-- Do NOT modify `alembic/versions/` — create new migrations
+- Do NOT use `os.system()`; use `subprocess.run()` instead
+- Do NOT commit secrets; use environment variables
+- Do NOT modify `alembic/versions/`; create new migrations
 
 ## Architecture Decisions
 - Auth: JWT tokens, 1hr expiry, refresh token pattern
@@ -178,7 +163,9 @@ project/
       CLAUDE.md      # payment-specific rules (PCI compliance notes)
 ```
 
-Claude automatically reads the closest CLAUDE.md when working in a directory.
+Claude loads the CLAUDE.md files from the working directory and its parents at startup, and pulls in nested ones when it works on files in those subdirectories.
+
+Treat instruction files, skills and hooks as **code under review**. They steer an agent that has shell access. PixelLeak (disclosed by Glow Security, Sep 29, 2026) started from an innocent-looking rule: coding agents told to attach visual proof to private pull requests had no CLI path to GitHub's browser-only PR image upload, so they created public repositories (93% in personal accounts) and published more than 13,000 internal screenshots across 900+ repos. Glow's first mitigations were controlling shared skills and instruction files and removing blanket auto-approval.
 
 ---
 
@@ -190,11 +177,11 @@ Claude automatically reads the closest CLAUDE.md when working in a directory.
 # Start session (reads CLAUDE.md automatically)
 claude
 
-# With specific model
-claude --model claude-3-7-sonnet-20250219
+# With a specific model (full ID or an alias such as "opus" or "sonnet")
+claude --model claude-sonnet-5-5
 
-# With MCP config
-claude --mcp-config .claude/mcp.json
+# With an explicit MCP config (project-scoped servers normally live in .mcp.json)
+claude --mcp-config ./ci-mcp.json
 ```
 
 ### Headless Mode (for scripting)
@@ -205,36 +192,44 @@ claude -p "Fix all type errors in src/" \
   --output-format json \
   --max-turns 20
 
-# Pipe from file
-echo "Refactor src/utils.py to use async/await" | claude -p -
+# Pipe context in on stdin
+cat build.log | claude -p "Explain why this build failed and propose a fix"
 
 # Stream output
 claude -p "Add logging to all API endpoints" --output-format stream-json
 ```
 
-### Python SDK
+### Python SDK (Claude Agent SDK)
 
 ```python
 import asyncio
-from claude_code_sdk import query, ClaudeCodeOptions
+from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
 
-async def run_coding_task(task: str) -> str:
-    options = ClaudeCodeOptions(
+async def run_coding_task(task: str) -> str | None:
+    options = ClaudeAgentOptions(
+        model="claude-sonnet-5-5",        # pin it: CLI defaults change between releases
         max_turns=30,
-        allowed_tools=["bash", "str_replace_based_edit_tool"],
-        system_prompt_suffix="Always run tests after making changes.",
+        max_budget_usd=5.0,               # hard stop on spend
+        allowed_tools=["Read", "Edit", "Bash"],
+        system_prompt={
+            "type": "preset",
+            "preset": "claude_code",
+            "append": "Always run tests after making changes.",
+        },
     )
-    
-    messages = []
+
     async for message in query(prompt=task, options=options):
-        messages.append(message)
-    
-    return messages[-1].content[0].text
+        if isinstance(message, ResultMessage):
+            print(f"cost=${message.total_cost_usd} turns={message.num_turns}")
+            return message.result
+    return None
 
 result = asyncio.run(run_coding_task(
     "Add input validation to all POST endpoints in src/api/"
 ))
 ```
+
+The package was renamed from `claude_code_sdk` / `ClaudeCodeOptions` to `claude_agent_sdk` / `ClaudeAgentOptions`; older tutorials use the old names. The SDK bundles the CLI, which is why its own CI had to pin models when the CLI's default changed in September 2026.
 
 ---
 
@@ -252,7 +247,7 @@ Main Claude Code session
     └── Sub-agent 4: Update API documentation
 ```
 
-Each sub-agent runs in parallel, then the main agent reviews and merges the results.
+Each sub-agent runs with its own context window, then returns a summary that the main agent reviews and merges. The isolation is the point: exploration noise stays out of the main context.
 
 **When to use sub-agents:**
 - Codebase >50K lines of code
@@ -263,27 +258,18 @@ Each sub-agent runs in parallel, then the main agent reviews and merges the resu
 
 ## Custom MCP Integration
 
-Claude Code reads MCP servers from `~/.claude/config.json` or `.claude/mcp.json`:
+Claude Code reads project-scoped MCP servers from `.mcp.json` at the repository root (committed and shared with the team) and user or local servers from `~/.claude.json`; `claude mcp add` writes either:
 
 ```json
 {
   "mcpServers": {
     "context7": {
       "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp"],
-      "description": "Live library documentation"
-    },
-    "postgres": {
-      "command": "uvx",
-      "args": ["mcp-server-postgres"],
-      "env": {"DATABASE_URL": "postgresql://localhost/myapp"},
-      "description": "Direct DB access for schema inspection"
+      "args": ["-y", "@upstash/context7-mcp"]
     },
     "jira": {
-      "command": "uvx",
-      "args": ["mcp-server-jira"],
-      "env": {"JIRA_URL": "https://company.atlassian.net"},
-      "description": "Task tracking integration"
+      "type": "http",
+      "url": "https://mcp.internal.example.com/jira"
     }
   }
 }
@@ -291,23 +277,29 @@ Claude Code reads MCP servers from `~/.claude/config.json` or `.claude/mcp.json`
 
 With this config, Claude Code can:
 1. Look up current library docs before writing code (Context7)
-2. Read the actual DB schema before writing SQL (postgres MCP)
-3. Mark Jira tickets as done after completing implementations (jira MCP)
+2. Read and update tickets through an internal, centrally managed Jira server (HTTP transport, so credentials stay on the server side)
+
+Every MCP server is third-party code holding your credentials. Between Aug 15 and Oct 1, 2026, 73 MCP-titled security advisories were published (9 critical), including 25 for `mcp-atlassian` on Sep 22 alone (critical CVE-2026-77244, fixed in 0.22.0). The official MCP SDKs also patched an OAuth authorization-server mix-up (CVE-2026-104850 in TypeScript, GHSA-qx49-fqc8-xw99 in Python; fixed in TS 1.31.0/2.2.0 and Python 1.30.0/2.2.0). Pin server versions, prefer remote servers your platform team operates, and give database servers a read-only role.
 
 ---
 
 ## Safety and Permission Model
 
-Claude Code has a **layered permission model**:
+Claude Code has a **layered permission model**: allow, ask and deny rules on specific tools and commands, plus a session-wide **permission mode**:
 
 ```
-Permission Level    Who approves       What it covers
-────────────────────────────────────────────────────────
-Auto               Claude (no prompt)  Read files, run tests
-Ask per-turn       User confirms       Shell command execution
-Explicit allow     User pre-approves   Specific commands/dirs
-Blocked            Never runs          Network calls outside allowlist
+Permission mode     What runs without asking                     Where it fits
+───────────────────────────────────────────────────────────────────────────────
+default (Manual)    Reads; anything else prompts on first use    Interactive work on unfamiliar repos
+acceptEdits         Reads, file edits, basic filesystem commands Trusted repo, human watching
+plan                Reads (plus classifier-approved commands     Design review before changes
+                    when auto is available); no source edits
+auto                What a classifier model allows               Default for unconfigured interactive sessions
+dontAsk             Only pre-approved rules; the rest is denied  CI and other headless jobs
+bypassPermissions   Everything but a short never-auto list       Disposable sandboxes only
 ```
+
+**Auto mode is a convenience, not a boundary.** Anthropic made classifier-based auto mode the default for new Pro, Max and Team sessions from Aug 14, 2026, citing a 1,053-tester study in which humans refused a swapped-in dangerous command only 13.6% of the time while the classifier would have blocked 89% (vendor study). By 2.1.284 (Sep 28), any interactive session with no configured permission mode starts in auto. On Aug 26, Johann Rehberger published a "confused environment" attack on Opus 5 in auto mode: an HTTP 415 steered Claude from WebFetch to `curl`, it downloaded encoded files, wrote its own decoder, and a malicious `struct.py` shadowed the standard library. It succeeded in 3 of 5 runs for a C2 chain and 4 of 5 for writes outside the workspace. Anthropic closed the report as informative; Rehberger quotes its position as "The real boundary is OS isolation and network egress control."
 
 ### Configuration
 
@@ -315,27 +307,37 @@ Blocked            Never runs          Network calls outside allowlist
 {
   "permissions": {
     "allow": [
-      "bash(pytest*)",           // Always allow test runs
-      "bash(ruff*)",             // Always allow linting
-      "bash(git diff*)",         // Always allow git reads
-      "str_replace_based_edit_tool"  // Always allow file edits
+      "Bash(pytest *)",
+      "Bash(ruff check *)",
+      "Bash(git diff *)",
+      "Edit"
     ],
     "deny": [
-      "bash(rm -rf*)",           // Block destructive deletions
-      "bash(curl https://external*)", // Block external network
-      "bash(pip install*)"       // Block package installs without approval
+      "Bash(rm -rf *)",
+      "Bash(curl *)",
+      "Bash(pip install *)",
+      "Read(./.env)",
+      "Read(./.env.*)"
     ]
   }
 }
 ```
 
+Put team rules in `.claude/settings.json` and organization policy in managed settings, which nothing below them can override. Two caveats a staff engineer should state out loud: deny rules on command strings are a speed bump, since `python -c` can do what `curl` does, and `permissions.defaultMode` values `auto` and `bypassPermissions` are ignored in project or local settings so a cloned repo cannot loosen its own sandbox. Organizations that do not want either mode at all set `permissions.disableAutoMode` or `permissions.disableBypassPermissionsMode` to `"disable"` in managed settings. The `default` mode has been labeled **Manual** in the UI since 2.1.200; both names are accepted.
+
 ### Production Safety Rules
 
-1. **Always sandbox**: Run in Docker container or E2B cloud VM
-2. **Git isolation**: Create a feature branch before starting; review diff before merge
-3. **Human checkpoint**: For prod deployments, require human review of the final diff
-4. **Secret scanning**: Run `truffleHog` or `git-secrets` on every Claude Code output
-5. **Rate limits**: Set `max_turns` to prevent runaway loops (recommended: 20-30)
+1. **Always sandbox**: Run in a container or microVM with a default-deny network egress allowlist. The permission layer reduces mistakes; the sandbox contains them.
+2. **Git isolation**: Create a feature branch before starting; review diff before merge. GitSpawn (Manifold, Sep 2, 2026) showed a repository's own `.git/config` (`core.fsmonitor`, `core.hooksPath`, clean and process filters) running commands outside the sandbox, with no prompt, in seven CLI agents. It needs the `.git` directory to arrive intact (an archive, shared drive or sync folder); a normal clone does not carry it. So run agents on fresh clones, not copied directories, and force the risky keys off for the agent's environment with `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` (for example `core.fsmonitor=false`, `core.hooksPath=/dev/null`). Those environment overrides beat every config file, including the repository's own (only an explicit `git -c` ranks higher); a `git config --global` setting does not, because repository-local config wins over global. Filter drivers have per-repository names and cannot be switched off generically this way, which is why the fresh clone is the primary control.
+3. **Human checkpoint**: For prod deployments, require human review of the final diff. GitHub now lets Copilot code review approvals count toward required reviews (public preview, off by default, Sep 1, 2026), so set branch protection so an agent-authored PR cannot be approved by an agent alone.
+4. **Secret and destination scanning**: Run `truffleHog` or `git-secrets` on every Claude Code output, and block new public repositories, gists and pushes to personal accounts from agent sessions (the PixelLeak channel).
+5. **Budgets**: Set `--max-turns` (recommended: 20-30) and `max_budget_usd` in the SDK to stop runaway loops.
+6. **Version floor**: Plugin4Shell (swapped SHA-pinned plugins) was fixed in 2.1.179 and the GitSpawn `fsmonitor` path in 2.1.196; Manifold reported a second path through `claude ultrareview` still open on 2.1.252. Enforce a floor with the managed `requiredMinimumVersion` setting.
+7. **Extensions are code**: Plugins, hooks and the new mods (2.1.287, Oct 1, 2026) are not sandboxed and run with Claude Code's own access to the machine. Review them like dependencies.
+
+### Enterprise Controls
+
+Claude Code is becoming governed infrastructure. Managed settings now cover model allowlists (`availableModels`, with exact matching since 2.1.283), `deniedModels` (2.1.283), `allowedProviders` (2.1.285) and version floors and ceilings. `claude plugin eval` (2.1.269) runs scored, reproducible eval suites for plugins before you roll them out. `claude self-hosted-runner` (2.1.224, Team and Enterprise) lets web, mobile and desktop sessions execute on your own machines: Anthropic runs the control plane, your perimeter holds the code, credentials and network egress. Cursor (Self-hosted Machines, Sep 2), OpenAI (Agents API with self-hosted sandboxes, Sep 10) and GitHub (local sandboxing in the Copilot app, preview Sep 23) shipped the same split in the same weeks.
 
 ---
 
@@ -350,75 +352,101 @@ on:
   issues:
     types: [labeled]
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   ai-fix:
     if: github.event.label.name == 'ai-fix'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false   # the agent's git calls cannot push with the job token
+
       - name: Run Claude Code
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Untrusted input: pass through env, never interpolate ${{ }} into the script
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          # Force risky repo-config keys off for every git call the agent makes
+          GIT_CONFIG_COUNT: "2"
+          GIT_CONFIG_KEY_0: core.fsmonitor
+          GIT_CONFIG_VALUE_0: "false"
+          GIT_CONFIG_KEY_1: core.hooksPath
+          GIT_CONFIG_VALUE_1: /dev/null
         run: |
-          pip install claude-code
-          
-          ISSUE_BODY="${{ github.event.issue.body }}"
-          
-          claude -p "Fix the following bug: $ISSUE_BODY
-          
+          npm install -g @anthropic-ai/claude-code@2.1.287   # pin the CLI version
+
+          printf '%s' "$ISSUE_BODY" | claude -p "Fix the bug described in the issue text on stdin.
           Rules:
           - Read the relevant files first
           - Make minimal changes
           - Run tests and verify they pass
-          - Do not change unrelated code
-          " --output-format json --max-turns 15 > result.json
-      
+          - Do not change unrelated code" \
+            --model claude-sonnet-5-5 \
+            --permission-mode dontAsk \
+            --allowedTools "Read" "Edit" "Bash(pytest *)" "Bash(git diff *)" \
+            --output-format json --max-turns 15 > result.json
+
       - name: Create Pull Request
-        uses: peter-evans/create-pull-request@v5
+        uses: peter-evans/create-pull-request@v8
         with:
           title: "AI Fix: ${{ github.event.issue.title }}"
           body: "Automated fix by Claude Code"
           branch: "ai-fix/${{ github.event.issue.number }}"
 ```
 
+Three details carry the security weight. The issue body is attacker-controlled, so it reaches the shell only through an environment variable (direct `${{ }}` interpolation into `run:` is a classic Actions injection) and reaches the model as data with a narrow tool allowlist. The checkout does not leave the job's write token in `.git/config`, so only the separate PR step can push. And the job pins both the CLI and the model, so a Claude Code release cannot silently change either. Anthropic's `anthropics/claude-code-action` packages the same pattern if you prefer not to maintain the script.
+
 ### Cost Model for CI
 
-| Task Type | Avg Turns | Avg Tokens | Estimated Cost |
-|-----------|-----------|------------|----------------|
-| Bug fix (small) | 8 | 15K | $0.23 |
-| Test generation | 12 | 25K | $0.38 |
-| Feature implementation | 20 | 50K | $0.75 |
-| Large refactor | 30 | 100K | $1.50 |
+Coding-agent cost is dominated by **input**, most of it re-sent context. Anthropic's Claude Code telemetry (Sep 24, 2026, vendor-reported) puts the input-to-output token ratio at 324:1, up from 189:1 in March, with context per request up 2.6x. So the cached-input price and the cache hit rate matter far more than the output price.
 
-*At 100 CI runs/day: ~$75-150/day depending on task mix.*
+Illustrative estimates, not measurements. Assumptions: about 300 input tokens per output token; uncached input billed at the 5-minute cache-write rate; list prices per 1M tokens of Sonnet 5.5 ($2 input, $10 output, $2.50 cache write, $0.20 cache read) and Opus 5.5 ($4, $20, $5, $0.20).
+
+| Task Type | Model calls | Input tokens | Output tokens | Sonnet 5.5, 90% cache hits | Opus 5.5, 90% cache hits | Sonnet 5.5, 70% cache hits |
+|-----------|-------------|--------------|---------------|----------------------------|--------------------------|----------------------------|
+| Bug fix (small) | 15 | 750K | 2.5K | $0.35 | $0.56 | $0.69 |
+| Test generation | 25 | 1.75M | 6K | $0.81 | $1.31 | $1.62 |
+| Feature implementation | 50 | 5M | 15K | $2.30 | $3.70 | $4.60 |
+| Large refactor | 120 | 18M | 50K | $8.24 | $13.24 | $16.52 |
+
+*At 100 CI runs/day (60 bug fixes, 30 test generations, 10 features): about $68/day on Sonnet 5.5 and $110/day on Opus 5.5 at a 90% hit rate; drop the hit rate to 70% and the Sonnet bill roughly doubles to about $136/day.*
+
+Three things fall out of the table. Cache hit rate moves cost more than model choice. Opus 5.5 costs roughly 1.6x Sonnet 5.5 here, not 2x, because both read cache at $0.20 per 1M (Opus 5.5's cache-read rate is 0.05x its input price). And Anthropic says harness changes cut Claude Code's cache-miss input by more than half (vendor-reported), which is why a CLI upgrade can change your bill even with the same model.
 
 ---
 
 ## Comparison: Claude Code vs Alternatives
 
-| Feature | Claude Code | Cursor/Windsurf | Cline | OpenHands |
-|---------|-------------|-----------------|-------|-----------|
-| **Interface** | CLI + SDK | IDE (VS Code fork) | VS Code extension | Web UI + CLI |
-| **Model** | Claude only | Any (GPT, Claude, Gemini) | Any | Any |
-| **Autonomy** | Full | Medium (requires clicks) | Full | Full |
-| **CI/Headless** | ✅ Native | ❌ | ✅ | ✅ |
-| **MCP support** | ✅ Native | ✅ | ✅ | ✅ |
-| **CLAUDE.md** | ✅ | ❌ (similar: .cursorrules) | ❌ | ❌ |
-| **Open source** | ❌ | ❌ | ✅ | ✅ |
-| **Best for** | Backend devs, CI/CD | UI/frontend devs, visual | Any developer | Self-hosted teams |
+| Feature | Claude Code | Codex CLI | Cursor/Windsurf | Cline | OpenHands |
+|---------|-------------|-----------|-----------------|-------|-----------|
+| **Interface** | CLI + IDE extensions + desktop/web | CLI + IDE extension + cloud | IDE (VS Code fork) + cloud agents | VS Code extension + SDK | Web UI + CLI |
+| **Model** | Claude models (Claude API, Bedrock, Google Cloud, Foundry) | OpenAI models (GPT-6.1 Sol default since rust-v0.159.1) | Any (GPT, Claude, Gemini, Grok, own models) | Any | Any |
+| **Autonomy** | Full | Full | Full (agent mode) | Full | Full |
+| **CI/Headless** | Yes (`claude -p`) | Yes (`codex exec`) | Cloud agents | Yes (SDK) | Yes |
+| **MCP support** | Yes | Yes | Yes | Yes | Yes |
+| **Instruction file** | `CLAUDE.md` (reads `AGENTS.md` if absent) | `AGENTS.md` | Rules files, `AGENTS.md` | Own rules files | Own repo instructions |
+| **Open source** | No | Yes (Apache-2.0) | No | Yes | Yes |
+| **Best for** | Backend devs, CI/CD | OpenAI shops, CI/CD | UI/frontend devs, visual | Any developer | Self-hosted teams |
 
-### SWE-bench Verified Scores (May 2026)
+### Coding-Agent Benchmarks (late September 2026)
 
-| Agent | Score | Notes |
-|-------|-------|-------|
-| GPT-5.5 (raw model leader) | 88.7% | #1 on SWE-Bench Verified leaderboard |
-| Claude Opus 4.7 (raw model) | 87.6% | Leads SWE-Bench Pro at 64.3% |
-| Claude Code (Opus 4.7 / Sonnet 4.6) | ~87% | Anthropic's official agent |
-| OpenHands + Claude Sonnet 4.6 | ~75% | Open-source framework |
-| Aider + Claude Sonnet 4.6 / GPT-5.5 | ~74% | Open-source CLI |
-| Devin (commercial) | ~65% | Cognition AI product |
-| SWE-agent + GPT-5.5 | ~55% | Princeton research baseline |
+SWE-bench Verified no longer separates frontier agents: scores cluster near the ceiling, and an audit (arXiv 2609.34262) found that 24% (Opus 4.7) to 73% (Fable 5) of passing SWE-Bench Pro v1.0 runs were unearned, mostly through git-history leakage. Use contamination-resistant benchmarks and always cite the effort level and who ran it.
+
+| Benchmark | Result | Runner and effort | Note |
+|-------|-------|-------|-------|
+| Terminal-Bench 4.0 | GPT-6 Astra 58.18% | tbench.ai leaderboard (Sep 21), max | 66 tasks, 8-hour timeout; not comparable to 3.0 |
+| Terminal-Bench 4.0 | Claude Fable 5.1 57.88% | Leaderboard, max/xhigh | |
+| Terminal-Bench 4.0 | Claude Opus 5 53.94% | Leaderboard, xhigh | |
+| Terminal-Bench 4.0 | Claude Opus 5.5 66.4%; Sonnet 5.5 70.6% | Anthropic, vendor-reported (Opus at xhigh) | Released after the Sep 21 leaderboard snapshot |
+| SWE-Bench Pro v2, private set (272 tasks) | Claude Opus 5 81.6% | Scale (Sep 22), network-locked, pristine re-grade | The public 642-task split is saturated (Opus 5 99.4%) |
+| DeepSWE v1.1 | Three-way tie at 74%: GPT-6 Astra (xhigh, $4.43/task), Gemini 3.8 Flash (high, $2.36/task), Opus 5 (max, $11.84/task) | DeepSWE leaderboard (Sep 22) | Same pass rate, 5x spread in cost per task |
+
+The harness matters as much as the model: the same model scores differently inside Claude Code, Codex, OpenHands or a minimal harness, so compare agents on your own repositories before trusting any leaderboard.
 
 ---
 
@@ -427,37 +455,48 @@ jobs:
 ### Q: How does Claude Code differ from GitHub Copilot?
 
 **Strong answer:**
-Copilot is a **completion tool** — it predicts the next few lines of code as you type. Claude Code is an **autonomous agent** — you give it a task (e.g., "add authentication to this API"), and it reads the codebase, plans the implementation, edits multiple files, runs tests, fixes failures, and only finishes when tests pass. The experience is fundamentally different: Copilot helps you code faster; Claude Code codes *for* you while you review the output.
+Copilot started as a **completion tool**: it predicts the next few lines of code as you type. Claude Code started as an **autonomous agent**: you give it a task (e.g., "add authentication to this API"), and it reads the codebase, plans the implementation, edits multiple files, runs tests, fixes failures, and only finishes when tests pass. By late 2026 the products have converged (Copilot has a coding agent, desktop computer use in preview and dynamic workflows), so the useful distinction is architectural: where the loop runs (terminal, CI, a vendor cloud, or a self-hosted runner), who controls the model and permissions, and how the result enters review. Copilot is strongest inside the GitHub workflow; Claude Code is strongest as a scriptable agent you embed in your own pipelines.
 
 ### Q: What is CLAUDE.md and why is it critical?
 
 **Strong answer:**
-CLAUDE.md is like a `README` specifically written for an AI colleague. Without it, Claude Code treats your project as a generic Python/JS project. With it, Claude knows: your exact test command, your forbidden patterns (no raw SQL, use ORM), your architecture decisions (JWT auth, specific error format), and your coding standards. It converts a general-purpose agent into a **project-specialist**. I've seen 2-3x faster task completion and 60% fewer mistakes with a well-written CLAUDE.md.
+CLAUDE.md is like a `README` specifically written for an AI colleague. Without it, Claude Code treats your project as a generic Python/JS project. With it, Claude knows: your exact test command, your forbidden patterns (no raw SQL, use ORM), your architecture decisions (JWT auth, specific error format), and your coding standards. It converts a general-purpose agent into a **project-specialist**, and in practice it cuts the repeated corrections you otherwise make every session. Since September 2026 Claude Code falls back to `AGENTS.md`, the cross-vendor convention Codex and Cursor also read, so I keep shared rules in `AGENTS.md` and Claude-specific ones in `CLAUDE.md`. I review changes to these files like code, because they steer an agent with shell access.
 
 ### Q: How do you safely run Claude Code in production CI?
 
 **Strong answer:**
 Three layers:
-1. **Sandbox**: Run Claude Code inside a Docker container with no external network access. Only the git repo and test runner are accessible.
-2. **Permission allow-list**: Use the permissions config to whitelist exactly which bash commands are allowed (test runners, linters) and block destructive operations (rm -rf, pip install without review).
-3. **Human gate**: Claude Code outputs a branch with a diff. A human reviews the diff in a PR and merges. Claude never merges directly to main. This keeps human judgment in the loop for the final decision.
+1. **Sandbox**: Run Claude Code inside a container or microVM with a default-deny egress allowlist. Only the git repo, the package mirror and the model endpoint are reachable. Repository git hooks and `fsmonitor` are disabled for agent runs.
+2. **Permission allow-list**: Run headless in `dontAsk` mode with an explicit tool allowlist (test runners, linters, file edits), pin the CLI version and the model, and treat any untrusted text (issue bodies, PR comments) as data passed through environment variables, never interpolated into the workflow script.
+3. **Human gate**: Claude Code outputs a branch with a diff. A human reviews the diff in a PR and merges. No agent approves an agent-authored PR, even though GitHub now allows Copilot approvals to count toward required reviews.
+
+### Q: Your team wants to run Claude Code in auto mode on developer laptops. Is that safe?
+
+**Strong answer:**
+It is safer than click-through approvals, and that is all it is. Anthropic's own study found humans refused a swapped-in dangerous command only 13.6% of the time while the classifier would have blocked 89%, so auto mode beats approval fatigue. But Rehberger's August attack got Opus 5 in auto mode to run a C2 chain in 3 of 5 runs by shaping the environment rather than the prompt, and Anthropic's position, as he reports it, is that the real boundary is OS isolation and network egress control. So I would allow auto mode only inside a boundary: a devcontainer or VM per repo with an egress allowlist, no long-lived cloud credentials in the environment, managed settings that pin allowed models and a minimum Claude Code version, and plugins and mods reviewed like dependencies because they run unsandboxed. On a laptop with Full Disk Access and production credentials in the shell, auto mode is not acceptable no matter how good the classifier is.
 
 ### Q: How do you handle the cost of Claude Code for high-volume CI?
 
 **Strong answer:**
-I optimize in three ways:
-1. **Task scoping**: Claude Code is cost-effective for independent, bounded tasks (bug fixes, test generation). I don't use it for open-ended exploration — that's still cheaper with a human.
-2. **Max turns**: Setting `max_turns=15` prevents runaway jobs that burn $10+ on circular reasoning.
-3. **Model routing**: For simple bug fixes (syntax errors, obvious typos), I use Claude 3.5 Haiku via the SDK — 5x cheaper. For architectural refactoring, I use Claude 3.7 Sonnet with Extended Thinking.
+I start from where the money goes: coding-agent sessions run at roughly 300 input tokens per output token (Anthropic's September telemetry says 324:1), so cache behavior dominates. Then I optimize in four ways:
+1. **Task scoping**: Claude Code is cost-effective for independent, bounded tasks (bug fixes, test generation). I don't use it for open-ended exploration without a budget.
+2. **Budgets**: `--max-turns` and `max_budget_usd` prevent runaway jobs that burn $10+ on circular reasoning.
+3. **Cache hygiene**: Stable system prompts and tool lists at the front of the context, no timestamps or random IDs in the prefix, and alerting on cache hit rate; a drop from 90% to 70% roughly doubles the bill in my cost model.
+4. **Model routing**: Sonnet 5.5 at default effort for most CI tasks, Opus 5.5 for architectural refactors, and Haiku 4.5 only for trivial edits. Haiku 4.5 is still the only Haiku (Haiku 5.5 is announced, not released as of October 1, 2026). Its retirement is "not sooner than October 15, 2026"; with no deprecation notice issued and Anthropic's 60-day notice rule, it should not retire on the Claude API before about December, but Foundry already lists November 15. I would not build a long-term plan on it. Because Opus 5.5 and Sonnet 5.5 both read cache at $0.20 per 1M, the Opus premium on cache-heavy work is closer to 1.6x than 2x.
 
 ---
 
 ## References
 
-- Anthropic. "Claude Code: Building Agentic Coding Experiences" (2025) — https://docs.anthropic.com/claude-code
-- Anthropic. "Claude Code SDK Documentation" — https://github.com/anthropics/claude-code
-- Anthropic. "CLAUDE.md Best Practices" — https://docs.anthropic.com/claude-code/settings#claudemd
-- SWE-bench Verified Leaderboard — https://www.swebench.com/
+- Anthropic. "Claude Code overview": https://code.claude.com/docs/en/overview
+- Anthropic. "Claude Code setup" (native installer, npm, version pinning): https://code.claude.com/docs/en/setup
+- Anthropic. "Claude Code settings" (permissions and managed settings): https://code.claude.com/docs/en/settings
+- Anthropic. "Agent SDK reference: Python": https://code.claude.com/docs/en/agent-sdk/python
+- Anthropic. Claude Code changelog: https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md
+- Anthropic. "Claude Opus 5.5: built for coding sessions that use more context" (Sep 2026): https://claude.com/blog/claude-opus-5-5-built-for-coding-sessions-that-use-more-context
+- Rehberger, J. "Breaking Claude Code Opus 5 Auto Mode" (Aug 2026): https://embracethered.com/blog/posts/2026/breaking-claude-code-opus-5-and-automode/
+- Terminal-Bench leaderboard: https://www.tbench.ai/
+- Terminal-Bench. "Terminal-Bench 4.0" (Aug 28, 2026; removes 8 of 3.0's 74 tasks): https://www.tbench.ai/news/terminal-bench-4-0
 
 ---
 

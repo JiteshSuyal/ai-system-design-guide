@@ -48,7 +48,20 @@ The input is a heterogeneous pile (PDFs, scans, office docs, HTML, email, images
 
 - **File-type detection by content, not extension.** The standard is magic-number sniffing via `libmagic` (the library behind the Unix `file` command), exposed through bindings like `python-magic`. Parsers such as Unstructured auto-detect type this way and fall back to the extension.
 - **Language detection** for routing and filtering, commonly with fastText's language classifier.
-- **Parsing and routing.** Content type determines the processor: text-extractable PDFs take a fast text path, scanned or image PDFs take OCR, complex multi-column or table-heavy documents take a layout model or a multimodal (per-page-screenshot) path, office docs take format-specific handlers, and email is split into headers and body. The leading toolkits are **Unstructured** (64+ file types, emits typed elements like Title/NarrativeText/Table), **Docling** (IBM, MIT-licensed, layout plus table models, multiple export formats), and **LlamaParse** (tiered API modes up to a multimodal agentic parse). A teaching point: published parser benchmarks disagree, so **benchmark parser choice on your own documents** rather than trusting a leaderboard.
+- **Parsing and routing.** Content type determines the processor: text-extractable PDFs take a fast text path, scanned or image PDFs take OCR, complex multi-column or table-heavy documents take a layout model or a multimodal (per-page-screenshot) path, office docs take format-specific handlers, and email is split into headers and body. The leading toolkits are **Unstructured** (64+ file types, emits typed elements like Title/NarrativeText/Table), **Docling** (IBM, MIT-licensed, layout plus table models, multiple export formats, and pluggable VLM backends such as NVIDIA Nemotron Parse 2.0 and MinerU 2.5 Pro as of September 2026), **MinerU**, and **LlamaParse** (tiered API modes up to a multimodal agentic parse). A teaching point: published parser benchmarks disagree, so **benchmark parser choice on your own documents** rather than trusting a leaderboard.
+
+### Route Pages to the Cheapest Tier That Works
+
+At corpus scale, parsing cost is set by **pages per GPU-second**, not by the best leaderboard score. The 2026 pattern is tiered: try the cheap path, escalate only the pages that fail a quality check.
+
+| Tier | Example | Cost and throughput | Use for |
+|---|---|---|---|
+| No model | MinerU 4.0 `flash` tier, native PDF text extraction | CPU only | Born-digital PDFs and office files |
+| Small specialist models | MinerU `basic` (OCR, formula and table models, CPU-capable); NVIDIA Nemotron Parse 2.0 (under 1B parameters, OpenMDW-1.1) | Cheap, self-hosted | Scans with simple layout |
+| Parsing VLM | Cohere Parse `parse-v5.0` (2.3B, August 27, 2026): $1.50 per 1,000 pages via API, 4.5 pages/s on one GPU (vendor); jina-ocr-v1 (September 14, 2026): 2.57 pages/s on one A100, CC BY-NC 4.0 so non-commercial without a license | Mid | Tables, forms, multi-column |
+| Frontier VLM | GPT-6 Sol, Claude Opus 5.5, Gemini 3.8 Flash class | Highest per page | The hard residue |
+
+The accuracy gap between the tiers is smaller than the price gap: on Cohere's own ParseBench run, Cohere Parse averaged 79.2 against 84.4 for GPT-5.5 and 84.3 for Claude Opus 4.8, neither of them the vendor's newest model even at publication (vendor-run; rerun it against current models before you rely on it). MinerU 4.0 (September 16, 2026) builds the tiering in (`flash`, `basic`, `standard`, `advanced`), parses DOCX, PPTX, XLSX, EPUB and HTML natively without converting to PDF, and returns stable block locators (`doc/tier/page/block`) that make citations verifiable and let agents read documents progressively instead of receiving pre-cut chunks.
 
 ---
 
@@ -81,7 +94,11 @@ The production pattern composes them, MinHash first, then SemDeDup. State the th
 
 **PII detection and redaction.** Microsoft Presidio (MIT) is the open standard: an Analyzer that detects entities via NER plus regex, checksums, and context words, and an Anonymizer that redacts, replaces, masks, hashes, or encrypts, across text, images (with OCR), and structured data, deployable at corpus scale. Because dedup reduces duplication-driven memorization, privacy and dedup are linked.
 
-**Consent, licensing, and provenance** are now a regulatory requirement, not just hygiene. Under the EU AI Act, general-purpose-model providers must keep a copyright policy and publish a "sufficiently detailed summary" of training content using the AI Office's mandatory template, including data sources and respect for copyright opt-outs (this summary duty has applied to new general-purpose models since August 2025, with models already on the market given until August 2027). Output-marking obligations follow. The governance implication for the pipeline: every record carries source, license, consent status, and timestamp as metadata from ingestion onward, which is exactly what lineage (below) provides. Governance is not a final gate; it is metadata threaded through every stage. See [AI Governance and Compliance](../13-reliability-and-safety/04-ai-governance-and-compliance.md).
+**Consent, licensing, and provenance** are now a regulatory requirement, not just hygiene. Under the EU AI Act, general-purpose-model providers must keep a copyright policy and publish a "sufficiently detailed summary" of training content using the AI Office's mandatory template, including data sources and respect for copyright opt-outs (this summary duty has applied to new general-purpose models since August 2025, with models already on the market given until August 2027). Article 50 transparency obligations have applied since August 2, 2026; generative systems placed on the market before that date have until December 2, 2026 to add machine-readable marking. The governance implication for the pipeline: every record carries source, license, consent status, and timestamp as metadata from ingestion onward, which is exactly what lineage (below) provides. Governance is not a final gate; it is metadata threaded through every stage. See [AI Governance and Compliance](../13-reliability-and-safety/04-ai-governance-and-compliance.md).
+
+**Record how data was acquired, not just its license.** US courts are separating the legality of *training* from the legality of *acquisition*. In Bartz v. Anthropic (2025) the court held training on books to be fair use but did not extend that to building a library from pirated copies, and the case settled for $1.5B. In August 2026 music publishers including Sony Music Publishing and Warner Chappell sued Anthropic on the same acquisition theory, alleging torrenting of books containing lyrics and sheet music, while the US government filed a brief (reported September 2, 2026) backing OpenAI's fair-use position on training in The New York Times v. OpenAI. For the pipeline, that means a provenance field for **acquisition channel** (licensed feed, crawl under robots rules, purchased, user-contributed, torrent or shadow library) on every source, so a tainted source can be found and excised. The remediation path is expensive: Suno's v6 (September 2026) was retrained on licensed music, and the company said it would retire its older models.
+
+**Fully open releases make provenance auditable.** Most open-weight models ship weights only. MBZUAI's K2 Horizon family (September 3, 2026, Apache 2.0, 0.9B to 375B-A23B) also releases its training data (TxT360-v2 plus pretraining and midtraining sets), training code and intermediate checkpoints, so you can run contamination checks against the actual pretraining corpus instead of trusting a model card.
 
 ---
 
@@ -103,6 +120,8 @@ The production pattern composes them, MinHash first, then SemDeDup. State the th
 
 **Orchestrators.** Airflow is the default with the biggest ecosystem; Dagster is asset-based with incremental recompute that suits incremental RAG re-embedding; Prefect is the lighter-weight Pythonic option. Spark and Ray are the distributed compute the orchestrator schedules, not orchestrators themselves.
 
+**The embed stage is moving into the store.** MongoDB Atlas Automated Embedding (GA August 13, 2026) embeds new documents on write and re-embeds changed ones with Voyage models; turbopuffer made native embedding GA on September 29, 2026; Elasticsearch `semantic_text` embeds at ingest. That deletes the embed-and-upsert job from your DAG and makes CDC freshness the database's problem. The tradeoff is that the vendor now owns the model version, so a model change becomes a vendor-scheduled re-embed rather than one you plan. On the lake side, Milvus 3.0 (July 2026) can query Parquet, Iceberg, Lance and Vortex data in place as read-only External Collections and backfill new columns online, so re-embedding a few hundred million rows with a new model becomes a background column fill rather than a parallel index rebuild.
+
 **Vector vs feature store.** The pipeline forks at the end: RAG writes chunk embeddings plus metadata to a **vector store** (the serving layer for retrieval), while fine-tuning writes curated examples to a **feature or training-record store** with point-in-time correctness. Both hang off the same shared trunk.
 
 ---
@@ -120,17 +139,18 @@ The tail that diverges from RAG:
 
 1. **Trusting file extensions** instead of magic-byte detection (wrong parser, silent garbage).
 2. **Parsing scanned PDFs with a text-only path** (empty or partial extraction; route image PDFs to OCR or multimodal).
-3. **Extracting from pre-stripped HTML** (boilerplate pollution; extract from raw with a content-extraction tool).
-4. **Skipping Unicode normalization** (exact dedup and matching silently miss duplicates).
-5. **Dedup at the wrong tier** (MinHash alone misses paraphrases; cascade exact, then fuzzy, then semantic).
-6. **Over-aggressive heuristic filtering** (Nemotron-CC reports it can discard ~18% of high-quality tokens; ablate every filter).
-7. **Trusting a quality classifier on reputation** (the data-quality illusion; validate downstream).
-8. **No PII redaction before training** (memorized and regurgitated PII, worse with duplication).
-9. **No license, consent, or provenance metadata** (an un-auditable corpus that cannot meet training-content-summary obligations).
-10. **Eval contamination, the silent killer** (n-gram-only decontamination misses rephrased test items; use embedding or LLM decontamination).
-11. **Stale RAG index** (full re-index instead of CDC; cost blowup, stale answers, orphaned vectors).
-12. **Bad chunking by default** (benchmarks disagree; evaluate per dataset).
-13. **No lineage** (irreproducible datasets and undebuggable regressions; emit lineage from day one).
+3. **Sending every page to the most expensive parser** (route by tier and escalate only failures; per-page cost dominates at corpus scale).
+4. **Extracting from pre-stripped HTML** (boilerplate pollution; extract from raw with a content-extraction tool).
+5. **Skipping Unicode normalization** (exact dedup and matching silently miss duplicates).
+6. **Dedup at the wrong tier** (MinHash alone misses paraphrases; cascade exact, then fuzzy, then semantic).
+7. **Over-aggressive heuristic filtering** (Nemotron-CC reports it can discard ~18% of high-quality tokens; ablate every filter).
+8. **Trusting a quality classifier on reputation** (the data-quality illusion; validate downstream).
+9. **No PII redaction before training** (memorized and regurgitated PII, worse with duplication).
+10. **No license, consent, provenance, or acquisition-channel metadata** (an un-auditable corpus that cannot meet training-content-summary obligations or isolate a tainted source).
+11. **Eval contamination, the silent killer** (n-gram-only decontamination misses rephrased test items; use embedding or LLM decontamination).
+12. **Stale RAG index** (full re-index instead of CDC; cost blowup, stale answers, orphaned vectors).
+13. **Bad chunking by default** (benchmarks disagree; evaluate per dataset).
+14. **No lineage** (irreproducible datasets and undebuggable regressions; emit lineage from day one).
 
 ---
 
@@ -146,6 +166,15 @@ Because it pays off three different ways from one operation. For training, dedup
 **Strong answer:**
 The trap is that simple n-gram decontamination is not enough. A well-known result showed that paraphrased or translated versions of test items slip right past n-gram matching, and a model trained on those can overfit a benchmark to near-frontier scores, and even synthetic data generated by strong models came back contaminated. So I decontaminate with semantic methods, embedding similarity search plus an LLM adjudicator, not just string overlap, and I run it against all of my eval sets before every evaluation. More broadly I prefer held-out or freshly released test sets where possible, treat any benchmark as potentially contaminated, and lean on my own gold data for the decisions that matter, since that is the one set I can guarantee the model has not seen.
 
+### Q: You need to parse 5 million pages of mixed born-digital PDFs, scans and office files for RAG. How do you design it for cost?
+
+**Strong answer:**
+I would route by tier and treat pages per GPU-second as the core metric. First, detect type by content and send born-digital PDFs and office files down a no-model path (native text extraction; MinerU's `flash` tier does this), which is often most of an enterprise corpus. Scans go to a small self-hosted OCR and layout model. Only pages that fail a cheap quality check (empty text, broken tables, low OCR confidence, garbled reading order) escalate to a parsing VLM, and only the residue that still fails goes to a frontier VLM.
+
+The arithmetic, assuming roughly 1,500 input and 800 output tokens per page and no reasoning tokens: Cohere Parse at $1.50 per 1,000 pages puts all 5M pages at $7,500. GPT-6 Sol ($2 / $10 per 1M) is about $0.011 per page, or ~$55,000, and Claude Opus 5.5 ($4 / $20) at least double that, since its thinking cannot be turned off, while specialist parsers trailed older frontier models (GPT-5.5, Opus 4.8) by only about 5 points on vendor-run ParseBench. The cheap end of the frontier families breaks the simple ladder: GPT-6 Luna ($0.10 / $0.50) is about $0.0006 per page, ~$2,750 for the corpus, below the parsing API, so it belongs in the benchmark next to the specialists; the open question is whether it holds up on tables and scans.
+
+Dedicated GPUs change it again: at Cohere's reported 4.5 pages/s per GPU, 5M pages is roughly 300 GPU-hours, which is why Cohere says its single-tenant Model Vault deployment undercuts the API by 23% at 50% utilization (vendor-reported). I would check licenses before self-hosting (jina-ocr-v1 is CC BY-NC), keep block-level locators so citations point at a page and block, and benchmark each tier on a few hundred of my own pages before fixing the routing thresholds.
+
 ---
 
 ## References
@@ -156,7 +185,10 @@ The trap is that simple n-gram decontamination is not enough. A well-known resul
 - Yang et al., "Rethinking Benchmark and Contamination ... with Rephrased Samples" arXiv:2311.04850
 - Microsoft, [Presidio](https://github.com/microsoft/presidio)
 - [Unstructured](https://www.unstructured.io/), [Docling](https://github.com/docling-project/docling), [OpenLineage](https://openlineage.io/)
+- [MinerU 4.0 release notes (Sep 2026)](https://github.com/opendatalab/MinerU/releases/tag/mineru-4.0.0-released)
+- [Cohere. "Parse" (Aug 2026)](https://cohere.com/blog/parse)
+- [MBZUAI K2 Horizon 375B-A23B model card](https://huggingface.co/IFM/K2-Horizon-375B-A23B)
 
 ---
 
-*Next: [Agent Fundamentals](../07-agentic-systems/01-agent-fundamentals.md)*
+*Previous: [Production RAG at Scale](14-production-rag-at-scale.md) | Next: [Agent Fundamentals](../07-agentic-systems/01-agent-fundamentals.md)*

@@ -24,6 +24,9 @@ For small fixes (typos, broken links, stale numbers), a direct PR is perfect. Fo
 
 - **No em dashes.** Use commas, parentheses, or a rewrite instead. This applies to prose, commit messages, and code comments.
 - **Confirmed-real models only.** Reference models that have actually shipped publicly. Do not invent model names, versions, prices, or benchmark numbers. When you cite pricing or capabilities, link the source.
+- **Say who measured it.** Label vendor-reported numbers as vendor-reported. Cite a benchmark score with its version, reasoning effort, harness, and runner (public leaderboard or vendor), because the same model can differ by several points across those. Describe announced, preview, and beta features as exactly that, not as shipped.
+- **Date time-sensitive facts in the sentence** ("released September 22, 2026", "as of October 2026") instead of adding "Last verified" stamps, which belong only in the model taxonomy, pricing, and job-market chapters.
+- **American spelling and straight quotes.** Use "-ize" endings and spellings such as "behavior" and "labeling", and use `"` and `'` rather than curly quotes.
 - **Conventional commits.** Use messages like `docs: fix broken links in case studies` or `feat(retrieval): add ColBERT reranking notes`, scoped to one logical change each.
 - **Match the surrounding voice.** Opinionated, concrete, and tradeoff-aware. Prefer specific numbers and named tools over vendor-neutral hedging.
 - **Keep links relative** and verify they resolve before opening a PR.

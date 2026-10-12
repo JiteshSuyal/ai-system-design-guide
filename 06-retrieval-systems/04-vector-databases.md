@@ -44,7 +44,7 @@ Traditional databases can store vectors but lack optimized search:
 
 | Approach | Search Complexity | Practical at Scale |
 |----------|-------------------|-------------------|
-| Brute force (PostgreSQL pgvector) | O(n * d) | OK to ~1M vectors |
+| Brute force (e.g., pgvector with no HNSW or IVFFlat index) | O(n * d) | OK to ~1M vectors |
 | ANN index (dedicated vector DB) | O(log n) or O(1) | Yes, billions |
 
 ---
@@ -118,9 +118,9 @@ Layer 0:   ********************  (all vectors)
 - Supports updates natively
 
 **Cons:**
-- Memory-intensive (graph structure)
-- Index size: ~1.5-2x vector data
-- 10M vectors at 1536 dims require ~80GB of RAM
+- Memory-intensive: the full-precision vectors and the graph links both live in RAM
+- The graph itself is a small share at high dimensions. OpenSearch's sizing rule is 1.1 x (4 x dims + 8 x M) bytes per vector, about 12-19% above the raw float32 vectors at 1,536 dims for M of 16 to 64; low-dimensional vectors pay proportionally more
+- 10M vectors at 1,536 dims need ~70-75 GB of RAM per copy (61 GB of that is the float32 vectors), before replicas
 
 **Key parameters:**
 - `M`: Max connections per node (16-64)
@@ -129,10 +129,10 @@ Layer 0:   ********************  (all vectors)
 
 ### DiskANN (SSD-based)
 
-The industry standard for **petabyte-scale** search.
+Built for **billion-scale** indexes that do not fit in RAM. The original paper served a billion SIFT points from one workstation with 64 GB of RAM and an SSD, at over 5,000 queries per second, under 3 ms mean latency and 95%+ 1-recall@1.
 
 **How it works:**
-- Keeps the graph on SSD (NVMe) and only a tiny index in RAM
+- Keeps the full-precision vectors and the graph on SSD (NVMe), with only compressed (PQ) codes in RAM to steer the search
 - Uses the Vamana algorithm for efficient disk-based graph traversal
 
 **Pros:**
@@ -141,9 +141,9 @@ The industry standard for **petabyte-scale** search.
 
 **Cons:**
 - Slightly higher latency than pure in-memory HNSW
-- Best suited for non-real-time search applications
+- Tail latency depends on NVMe IOPS, so size SSDs for query concurrency, not just capacity
 
-**Example:** A 100-million-vector index with 1536 dimensions would require nearly 1TB of RAM for HNSW. Using DiskANN, the RAM requirement drops by 90-95% while maintaining sub-10ms query times.
+**Example:** A 100-million-vector index with 1,536 dimensions needs roughly 700 GB of RAM per copy for HNSW (614 GB of float32 vectors plus graph and overhead). Using DiskANN, the RAM requirement drops by 90-95% while maintaining sub-10ms query times.
 
 ### IVF (Inverted File Index)
 
@@ -179,6 +179,21 @@ Compress vectors to reduce memory and speed up comparison.
 
 **Tradeoff:** Lower accuracy due to quantization loss
 
+### Low-Bit and Rotation-Based Quantization
+
+Between May and September 2026 several engines shipped or extended 1 to 8-bit vector storage, mostly as opt-in or preview options rather than defaults. The newest trick is **rotate first, then quantize**. Embedding dimensions have very uneven variance, so per-dimension scalar quantization wastes bits on quiet dimensions and clips loud ones. Multiplying by a random or Hadamard rotation spreads the energy evenly across dimensions, after which a uniform 4-bit or 1-bit grid loses far less information.
+
+| Engine | Feature | Status | Footprint |
+|---|---|---|---|
+| Qdrant | TurboQuant with Hadamard rotation (1.18, May 2026); Turbo4 storage type keeps only the 4-bit form (1.19, August 2026) | Opt-in | From 36 bits per coordinate in 1.18 (float32 original plus 4-bit copy) to 4 bits with Turbo4, a ninefold cut |
+| Weaviate | 4-bit Rotational Quantization (1.39, August 2026), adding to the 8-bit and 1-bit RQ it already had | Preview, HNSW only | 1,536-dim vector from 6,144 bytes to 784 bytes (7.84x) |
+| Elasticsearch | DiskBBQ (`bbq_disk`, GA since 9.2) gained a symmetric 1-bit OSQ scorer and merge-time calibration (9.5, August 2026) | GA; default index type for float vectors from 9.4 where the license includes it (Enterprise) | ~1 bit per dimension plus correction terms |
+| turbopuffer | Plain `i8` vector type (June 2026), no rotation | Shipped | 75% less storage and query cost than f32 for quantization-aware models (vendor) |
+
+Qdrant's own numbers show the tradeoff: 4-bit TurboQuant recall 0.9193 vs 0.9285 for 8-bit scalar quantization vs 0.9419 uncompressed on one dataset, at twice the compression of scalar quantization (vendor-reported). The design decision is whether to **keep the float originals for rescoring**. Keeping them on disk or object storage and rescoring the top few hundred candidates recovers most of the lost recall; dropping them (Turbo4) is the cheapest option and caps your maximum recall.
+
+The RAM math changes accordingly: 100M vectors at 1,536 dims is ~614 GB as float32 but ~77 GB at 4 bits. At a billion vectors, that is the difference between a fleet of high-memory nodes and a few machines plus SSD.
+
 ### Flat Index (Brute Force)
 
 No approximation, exact search.
@@ -206,18 +221,28 @@ No approximation, exact search.
 
 | Database | Type | Best For | Pricing Model |
 |----------|------|----------|---------------|
-| **Pinecone** | Managed cloud (serverless standard) | Easy start, scale, managed SLAs | Per vector-hour |
-| **Qdrant** | Open source / Cloud (Rust, high-perf) | Self-hosted control, fastest open-source on common workloads (~12ms p99 at 10M vectors) | Per GB (cloud) or free |
-| **Weaviate** | Open source / Cloud | Native hybrid (BM25 + dense + metadata) in a single query, multimodal | Per dimension-hour |
-| **Milvus** | Open source / Cloud (Zilliz) | Distributed scale (50M+ vectors), heterogeneous node types, tiered storage | Free (self-host) or Zilliz Cloud |
+| **Pinecone** | Managed cloud (serverless standard); BYOC GA September 23, 2026 (data plane in your AWS, GCP or Azure account) | Easy start, scale, managed SLAs; BM25 full-text search GA September 9, 2026 | Storage plus read and write units |
+| **Qdrant** | Open source / Cloud (Rust, high-perf) | Self-hosted control, strong filtered search; vendor benchmarks cite ~12ms p99 at 10M vectors | Per GB (cloud) or free |
+| **Weaviate** | Open source / Cloud | Native hybrid (BM25 + dense + metadata) in a single query, MMR diversity and Boost API (GA in 1.39), multimodal | Per dimension-hour |
+| **Milvus** | Open source / Cloud (Zilliz) | Distributed scale; 3.0 (July 2026) adds External Collections over Parquet, Iceberg, Lance and Vortex in object storage, plus online column backfill | Free (self-host) or Zilliz Cloud |
+| **turbopuffer** | Managed, object-storage-first | Many cold namespaces (per-tenant indexes) at low cost; native embedding GA September 29, 2026 | Usage-based |
 | **Chroma** | Open source | Prototyping, local dev, embedded use | Free |
 
 ### General-Purpose (Plugin/Extension)
 
 | Database | Type | Best For | Pricing Model |
 |----------|------|----------|---------------|
-| **pgvector (v0.8+)** | PostgreSQL extension | Small scale, existing PG (now supports HNSW + IVFFlat) | Compute only |
-| **Elasticsearch (v9.0)** | Search engine | Hybrid Search with cross-entropy fusion | License-based |
+| **pgvector (0.8.7)** | PostgreSQL extension | Small scale, existing PG (HNSW + IVFFlat). Patch to 0.8.7 (October 1, 2026): it fixes CVE-2026-103484, an IVFFlat build overflow that any role allowed to create an index can trigger | Compute only |
+| **Elasticsearch (9.5)** | Search engine | Hybrid via the `rrf` and `linear` retrievers, DiskBBQ quantized vectors, `semantic_text` fields that embed automatically at ingest | License-based |
+| **MongoDB Atlas Vector Search** | Document DB | Existing Mongo shops; Automated Embedding GA August 13, 2026 (Atlas embeds and re-embeds documents with Voyage models on write) | Atlas cluster pricing |
+
+### Where the Market Moved in 2026
+
+Three shifts change how you evaluate an engine:
+
+1. **Embedding moved into the database.** MongoDB Atlas Automated Embedding (GA), turbopuffer native embedding (GA; turbopuffer cites Readwise cutting median embedding latency 8x by embedding in parallel with query execution), Elasticsearch `semantic_text`, and Milvus 3.0's Hugging Face Inference Providers integration all remove the separate embed-and-sync pipeline. The cost is coupling: the vendor now picks the model version, so ask how a model change triggers re-embedding before you adopt it.
+2. **The index moved toward the lakehouse.** Milvus 3.0 External Collections query Parquet, Iceberg, Lance and Vortex data in place (zero-copy, read-only), and turbopuffer's September 30 "RIP, vector database" post describes a v3 storage design where the ANN index becomes a secondary index rather than the primary data layout (announced; it passes CI but is not in production yet, and the scale figures in the post are the vendor's). The argument shifts from "which vector DB" to "index in place over object storage, or copy into a serving store."
+3. **Low-bit quantization spread across vendors** (see [above](#low-bit-and-rotation-based-quantization)), changing the RAM budget for HNSW sizing.
 
 ---
 
@@ -229,11 +254,11 @@ No approximation, exact search.
 |---------|----------|--------|----------|--------|----------|
 | **Language** | Proprietary | Rust | Go | Go/C++ | C |
 | Hosted option | Yes | Yes | Yes | Yes (Zilliz) | Via cloud PG |
-| Self-hosted | No | Yes | Yes | Yes | Yes |
+| Self-hosted | BYOC only (data plane in your cloud) | Yes | Yes | Yes | Yes |
 | **Serverless** | Yes (Best) | Yes | Yes | Yes (Zilliz) | No |
-| **Cloud-Native** | Any | Any | Any | K8s Only | Any |
+| **Cloud-Native** | Any | Any | Any | K8s for distributed; Docker standalone | Any |
 | Metadata filtering | Good | Excellent | Good | Good | Via SQL |
-| **Hybrid search** | Native | Native | Native | Native | Multi-stage (limited) |
+| **Hybrid search** | Sparse-dense, or BM25 FTS with client-side fusion | Native | Native | Native | Multi-stage (limited) |
 | Max vectors | Billions | Billions | Billions | Billions | ~10M |
 | HNSW index | Yes | Yes | Yes | Yes | Yes |
 
@@ -251,10 +276,10 @@ results = index.query(
     filter={"tenant_id": "123", "category": {"$in": ["tech", "science"]}}
 )
 
-# Qdrant
-results = client.search(
+# Qdrant (Query API; the legacy /search endpoint is removed from the 1.19 REST schema)
+results = client.query_points(
     collection_name="documents",
-    query_vector=query_embedding,
+    query=query_embedding,
     limit=10,
     query_filter=Filter(
         must=[
@@ -262,14 +287,14 @@ results = client.search(
             FieldCondition(key="category", match=MatchAny(any=["tech", "science"]))
         ]
     )
-)
+).points
 ```
 
 **Performance impact:** Filtering happens during search, not after. Pre-filtered indices are faster but less flexible.
 
 **Why metadata filtering is often the bottleneck:** In naive vector search, we find the "Top K" nearest neighbors and THEN filter by metadata. If the filter is very restrictive, we might find 0 results after filtering. Specialized databases now use **Pre-Filtering with HNSW**, traversing the graph but only considering nodes that satisfy the boolean metadata constraint. This requires specialized bitmasks or hardware acceleration (SIMD) to keep latencies low.
 
-**Disk-Native Metadata:** Modern DBs like **Qdrant** offload metadata to disk-mapped segments, allowing for complex filters (e.g., full-text + geo + vector) without saturating RAM.
+**Disk-Native Metadata:** Modern DBs tier data between RAM and disk per component. Qdrant 1.19 replaced the old `on_disk` and `always_ram` flags with one `memory` setting (pinned, cached or cold) that applies to vectors, HNSW graphs, sparse and payload indexes, so complex filters (e.g., full-text + geo + vector) run without holding every payload index in RAM.
 
 ---
 
@@ -317,14 +342,16 @@ def hybrid_search(query: str, alpha: float = 0.5, top_k: int = 5) -> list[Docume
     return combined[:top_k]
 ```
 
-Some databases (Weaviate, Qdrant, Pinecone) support hybrid search natively:
+Some databases (Weaviate, Qdrant, Milvus, Elasticsearch) fuse dense and keyword results natively. Pinecone's BM25 full-text search ranks by one scoring type per request, so you run the lexical and vector searches separately and fuse them client-side (e.g., with RRF).
 
 ```python
-# Weaviate native hybrid
-results = client.query.get("Document", ["text"]).with_hybrid(
+# Weaviate native hybrid (Python client v4)
+docs = client.collections.use("Document")
+results = docs.query.hybrid(
     query=query,
-    alpha=0.5  # 0 = BM25 only, 1 = vector only
-).with_limit(5).do()
+    alpha=0.5,  # 0 = BM25 only, 1 = vector only
+    limit=5,
+)
 ```
 
 ### Pattern 4: Multi-Vector Query
@@ -445,6 +472,10 @@ class VectorDBMaintenance:
 - Read replicas for query scaling
 - Async replication for HA
 
+### Patching
+
+Treat the vector store like any other database on the CVE feed. pgvector 0.8.7 (October 1, 2026) fixes CVE-2026-103484, a buffer overflow during IVFFlat index builds that can lead to code execution for any database role allowed to create an index; earlier 2026 patches fixed a parallel HNSW build overflow (0.8.2) and possible index corruption during HNSW vacuuming (0.8.3). On managed Postgres, confirm the provider has shipped 0.8.7, and do not grant `CREATE INDEX` to application roles in multi-tenant schemas. Milvus 3.0.1 likewise fixed unauthenticated access through streaming gRPC calls on the external proxy port.
+
 ### Monitoring
 
 ```python
@@ -498,6 +529,19 @@ def alert_rules():
 | Weaviate Cloud | Per dimensions | ~$100/month |
 | Zilliz (Milvus) | Per CU | ~$75/month |
 
+### Managed RAG Pipelines (Build vs. Buy)
+
+A newer option skips the vector database decision entirely: a managed pipeline that parses, chunks, embeds, indexes and retrieves, billed by ingested tokens, storage and queries. Cloudflare AI Search went GA on October 1, 2026, with pricing effective November 1, 2026:
+
+| Meter | Price | Included per month (Workers plans) |
+|---|---|---|
+| Ingestion | $0.75 per 1M tokens (+$0.50 per 1M for images) | 5M tokens |
+| Storage | $2.00 per GB-month | 10 GB-month |
+| Semantic, vector or hybrid queries | $0.75 per 1K | 1,000 |
+| Full-text queries | $0.10 per 1K | 1,000 |
+
+The per-query meter dominates at scale: 10M hybrid queries a month is ~$7,500 in query fees alone, versus a self-hosted index whose marginal cost per query is close to zero once provisioned. Managed pipelines win on time-to-first-answer and for low or spiky volume; at steady high QPS, compare the query meter against node costs plus embedding API spend. Pinecone Nexus and Cohere Compass Cloud take the same "buy the pipeline" approach further; see [Agentic RAG](08-agentic-rag.md#compile-once-knowledge).
+
 ### Self-Hosted Costs
 
 ```python
@@ -508,13 +552,15 @@ def estimate_self_hosted_cost(
 ) -> dict:
     storage_gb = (vectors * dimensions * 4 * 2.5) / 1e9  # 2.5x for index
 
-    # Instance sizing
-    if storage_gb < 50:
-        instance = "r6g.large"  # 16 GB RAM, ~$60/month
-    elif storage_gb < 200:
-        instance = "r6g.xlarge"  # 32 GB RAM, ~$120/month
+    # Instance sizing: an in-RAM HNSW index must fit in memory with headroom
+    if storage_gb < 12:
+        instance = "r6g.large"  # 16 GB RAM
+    elif storage_gb < 25:
+        instance = "r6g.xlarge"  # 32 GB RAM
+    elif storage_gb < 50:
+        instance = "r6g.2xlarge"  # 64 GB RAM
     else:
-        instance = "r6g.2xlarge"  # 64 GB RAM, ~$240/month
+        instance = "r6g.4xlarge"  # 128 GB RAM; past ~100 GB, shard, quantize, or use DiskANN
 
     return {
         "storage_gb": storage_gb,
@@ -536,7 +582,7 @@ def estimate_self_hosted_cost(
 | Compliance | Depends | Full control |
 | Vendor lock-in | Yes | No (if open source) |
 
-**Verdict**: Start with Serverless. Only self-host if you have >500M vectors or strict **On-Prem/GPU-Local** requirements.
+**Verdict**: Start with Serverless. Only self-host if you have >500M vectors or strict **On-Prem/GPU-Local** requirements. If the requirement is "data stays in our cloud account" rather than "we run it," BYOC (Pinecone, GA September 2026) now covers that without taking on operations.
 
 ---
 
@@ -575,7 +621,7 @@ Need < 100K vectors?
 Before committing to a vector database:
 
 - [ ] Load representative data volume
-- [ ] Benchmark query latency at target QPS
+- [ ] Benchmark query latency at target QPS, with your real filters and top-k depth (vendor numbers rarely include restrictive filters; Qdrant-FineWeb-10B, released September 2026 with exact top-1,000 ground truth over 10.07B vectors, is a public benchmark at production scale)
 - [ ] Test metadata filtering performance
 - [ ] Verify update/delete performance
 - [ ] Test failure recovery
@@ -601,11 +647,13 @@ Decision depends on several factors:
 **Choose self-hosted (Qdrant, Milvus) when:**
 - Have Kubernetes and ops expertise
 - Cost sensitivity at scale
-- Need full control over data
+- Need full control over the software, not just data location
 - Specific compliance requirements
 - Want to avoid vendor lock-in
 
-For most startups, I would start with Pinecone or Qdrant Cloud for velocity, then evaluate migration if costs become prohibitive at scale. The switching cost is moderate since vector DBs have similar APIs.
+Two 2026 changes narrow the gap: Pinecone BYOC (GA September 23) runs the data plane in your own cloud account with no inbound access from Pinecone, and Pinecone's BM25 full-text search (GA September 9) removes the "we need a separate keyword engine" argument, though you still fuse lexical and vector results client-side.
+
+For most startups, I would start with Pinecone or Qdrant Cloud for velocity, then evaluate migration if costs become prohibitive at scale. The switching cost is the re-embed and re-index, not the API: query surfaces are similar, but in-database embedding features tie you to the vendor's model choice.
 
 ### Q: Explain how HNSW works and when you would not use it.
 
@@ -626,7 +674,7 @@ HNSW builds a hierarchical graph of vectors:
 
 **When not to use:**
 - Very small datasets (<10K): brute force is fine
-- Extremely memory constrained: HNSW uses 1.5-2x vector size for graph
+- Extremely memory constrained: HNSW keeps every full-precision vector plus its graph links in RAM
 - Need exact search: HNSW is approximate
 - Heavy update workload with tight latency: updates can cause temporary degradation
 
@@ -639,7 +687,7 @@ Alternatives:
 ### Q: When would you use a Disk-based index (like DiskANN) over a RAM-based index (HNSW)?
 
 **Strong answer:**
-I would use a Disk-based index when the memory cost of the index exceeds the budget or the capacity of a single high-memory node. For example, a 100-million-vector index with 1536 dimensions would require nearly 1TB of RAM for HNSW. Using DiskANN, I can store the majority of that 1TB on NVMe SSDs, reducing the RAM requirement by 90-95% while maintaining sub-10ms query times. This represents a massive TCO (Total Cost of Ownership) reduction for non-real-time search applications.
+I would use a Disk-based index when the memory cost of the index exceeds the budget or the capacity of a single high-memory node. For example, a 100-million-vector index with 1,536 dimensions needs roughly 700 GB of RAM per replica for HNSW (614 GB is the float32 vectors alone). Using DiskANN, I can keep the full vectors and the graph on NVMe SSDs and only compressed codes in RAM, reducing the RAM requirement by 90-95% while maintaining sub-10ms query times. This represents a massive TCO (Total Cost of Ownership) reduction for any workload that can absorb a few extra milliseconds per query, which covers most RAG traffic, since the LLM call dominates end-to-end latency.
 
 ### Q: Why is metadata filtering often the bottleneck in vector databases?
 
@@ -680,18 +728,28 @@ results = index.query(vector=query, namespace=tenant_id)
 - Separate collections for high-security requirements
 - Never post-filter (retrieve all, filter after) due to leakage risk
 
+**The hybrid-search catch:** BM25 scores depend on corpus-wide IDF statistics. In a shared collection, one large tenant's vocabulary shifts every other tenant's keyword scores, and term statistics leak across the boundary. Use an engine with per-tenant IDF (Qdrant 1.19 added it for sparse and BM25 search) or give large tenants their own collection.
+
 ---
 
 ## References
 
 - Malkov and Yashunin. "Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs" (HNSW, 2018)
-- Microsoft Research. "Vamana/DiskANN: A Disk-based Index for ANN Search" (2019/2023)
+- Subramanya et al. "DiskANN: Fast Accurate Billion-point Nearest Neighbor Search on a Single Node" (Microsoft Research, NeurIPS 2019)
+- [OpenSearch. "k-NN index: HNSW memory estimation"](https://docs.opensearch.org/2.9/search-plugins/knn/knn-index/)
 - Pinecone Documentation: https://docs.pinecone.io/
 - Pinecone. "The Managed Architecture of Serverless Vector DBs" (2024)
 - Qdrant Documentation: https://qdrant.tech/documentation/
 - Weaviate Documentation: https://weaviate.io/developers/weaviate
 - Milvus Documentation: https://milvus.io/docs
 - pgvector: https://github.com/pgvector/pgvector
+- [Milvus 3.0.0 release notes (July 2026)](https://github.com/milvus-io/milvus/releases/tag/v3.0.0)
+- [Qdrant 1.19 release (Aug 2026)](https://qdrant.tech/blog/qdrant-1.19.x/)
+- [Weaviate 1.39 release (Aug 2026)](https://weaviate.io/blog/weaviate-1-39-release)
+- [Elasticsearch release notes](https://www.elastic.co/docs/release-notes/elasticsearch)
+- [turbopuffer. "RIP, vector database" (Sep 2026)](https://turbopuffer.com/blog/rip-vector-database)
+- [Qdrant-FineWeb-10B benchmark (Sep 2026)](https://qdrant.tech/blog/qdrant-fineweb-10b-release/)
+- [Cloudflare AI Search pricing](https://developers.cloudflare.com/ai-search/platform/limits-pricing/)
 
 ---
 

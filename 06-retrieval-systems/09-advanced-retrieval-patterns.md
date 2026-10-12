@@ -4,11 +4,11 @@ Beyond the basics, production RAG systems use specialized patterns to handle com
 
 ## Table of Contents
 
-- [Query Decomposition (Multi-Query)](#query-decomposition)
-- [Hypothetical Document Embeddings (HyDE)](#hyde)
-- [Contextual Retrieval (The Anthropic Pattern)](#contextual)
-- [Iterative Document Enrichment](#enrichment)
-- [In-Context Reranking](#reranking)
+- [Query Decomposition (Multi-Query)](#query-decomposition-multi-query)
+- [Hypothetical Document Embeddings (HyDE)](#hypothetical-document-embeddings-hyde)
+- [Contextual Retrieval (The Anthropic Pattern)](#contextual-retrieval-the-anthropic-pattern)
+- [Iterative Document Enrichment](#iterative-document-enrichment)
+- [In-Context Reranking](#in-context-reranking)
 - [Interview Questions](#interview-questions)
 - [References](#references)
 
@@ -39,11 +39,12 @@ Queries are short; documents are long. This "Asymmetry" causes retrieval failure
 
 ## Contextual Retrieval (The Anthropic Pattern)
 
- standardized by Anthropic in late 2024, this pattern solves **Context Dilution**.
+Published by Anthropic in September 2024, this pattern solves **Context Dilution**.
 
 - **The Problem**: A chunk might say "It costs $200," but without the header, we don't know "It" is a "Widget-X."
-- **The Pattern**: During ingestion, for every 300-token chunk, have an LLM write a 50-token context string (e.g., "This chunk is about the pricing for Widget-X in the North American market").
-- **Benefit**: Increases retrieval precision by 30-50% for fragmented data.
+- **The Pattern**: During ingestion, for every 300-token chunk, have an LLM write a 50-100 token context string (e.g., "This chunk is about the pricing for Widget-X in the North American market") and prepend it before both embedding and BM25 indexing.
+- **Benefit**: Anthropic measured a 35% drop in top-20 retrieval failures from contextual embeddings alone, 49% with contextual BM25 added, and 67% with a reranker on top.
+- **2026 alternative**: Contextualized chunk embedding models (voyage-context-4) produce document-aware chunk vectors with no per-chunk LLM call, but only help the dense side. Full treatment in [Contextual Retrieval](10-contextual-retrieval.md).
 
 ---
 
@@ -52,17 +53,18 @@ Queries are short; documents are long. This "Asymmetry" causes retrieval failure
 Instead of just storing the raw document, we store "Enriched" meta-data.
 - **Summary**: Store a 1-paragraph summary of the document.
 - **Q&A Generation**: Generate 5 questions this document answers and embed those *with* the document.
-- **Status**: Most high-end RAG systems now embed **"Questions"** rather than **"Answers"** to match the user's query intent.
+- **Status**: Many high-end RAG systems embed generated **"Questions"** alongside the chunk text, so a short user question matches a stored question instead of a long answer passage.
 
 ---
 
 ## In-Context Reranking
 
-With 1M-2M context windows now standard (Claude Sonnet 4.6, Gemini 3.1 Pro), **Rank-by-Context** is a viable pattern.
+With 1M-token windows now standard on frontier models (Claude Opus 5.5 and Sonnet 5.5, the GPT-6 family at 1.05M, Gemini 3.8 Flash), **Rank-by-Context** is a viable pattern.
 1. Retrieve Top 100 docs.
 2. Put all 100 in the context window.
 3. Ask the model: "Read these 100 docs and identify the 5 most relevant. Then, use those 5 to answer."
 - **Win**: This utilizes the model's **Long Context Reasoning** to perform reranking without needing a separate Cross-Encoder model.
+- **Cost check**: 100 docs of 500 tokens is 50K input tokens per query: about $0.10 on a $2-per-1M model such as Claude Sonnet 5.5 or GPT-6 Sol, versus about $0.0025 for the same tokens on Voyage rerank-3 ($0.05 per 1M), a 40x gap before output tokens. Reserve it for low-volume, reasoning-heavy queries, and keep the prompt under long-context price cliffs (272K input on OpenAI, 200K on xAI).
 
 ---
 
@@ -76,15 +78,17 @@ HyDE relies on "Hallucinating" a baseline answer to find real data. If the user'
 ### Q: What is the "Asymmetric Retrieval" problem?
 
 **Strong answer:**
-Asymmetric retrieval refers to the fact that user queries are usually short (3-10 words) while document chunks are long (300-500 words). These inhabit different statistical distributions in the vector space, leading to "Distance Bias." High-performance systems solve this using **Asymmetric Encoders** (one model for queries, one for docs) or **Query Expansion** (HyDE) to "inflate" the query into a document-like distribution.
+Asymmetric retrieval refers to the fact that user queries are usually short (3-10 words) while document chunks are long (300-500 words). These inhabit different statistical distributions in the vector space, leading to "Distance Bias." High-performance systems solve this using **Asymmetric Encoders** (separate query and document prefixes or models) or **Query Expansion** (HyDE) to "inflate" the query into a document-like distribution.
+
+The asymmetry is now also a cost lever. Voyage 4 and Cohere Embed 5 ship model families in one shared space, so you can index documents with the large model and encode queries with the small one. Qdrant's Constella research preview goes further: a fixed 400M-parameter Stella document index with a 34.5M query encoder that keeps about 91% of BEIR-15 nDCG@10 at 12x lower CPU latency (vendor-reported). At high QPS, query encoding is on the hot path and document encoding is not, so spend the model budget on the document side.
 
 ---
 
 ## References
 - Gao et al. "Precise Zero-Shot Dense Retrieval without Relevance Labels" (HyDE, 2023/2024)
-- Anthropic. "The Contextual Retrieval Playbook" (2024)
+- [Anthropic. "Introducing Contextual Retrieval" (Sep 2024)](https://www.anthropic.com/news/contextual-retrieval)
 - LlamaIndex. "Query Transformation Cookbook" (2025)
 
 ---
 
-*Next: [Agentic Systems](../07-agentic-systems/01-agent-fundamentals.md)*
+*Previous: [Agentic RAG](08-agentic-rag.md) | Next: [Contextual Retrieval](10-contextual-retrieval.md)*

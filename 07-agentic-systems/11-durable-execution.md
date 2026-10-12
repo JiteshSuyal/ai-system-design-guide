@@ -8,6 +8,7 @@ An agent run is not a request/response handler. It calls tools, reads documents,
 - [The Durable-Execution Model](#the-durable-execution-model)
 - [Tools](#tools)
 - [Mapping Durable Execution onto Agent Loops](#mapping-durable-execution-onto-agent-loops)
+- [Managed Agent Runtimes: Renting the Durable Loop](#managed-agent-runtimes-renting-the-durable-loop)
 - [When You Need It](#when-you-need-it)
 - [Do You Need Durable Execution?](#do-you-need-durable-execution)
 - [Interview Questions](#interview-questions)
@@ -66,6 +67,7 @@ The integration landscape in 2026:
 - **Temporal + Google ADK** is experimental, rerouting LLM calls through activities, and notable for requiring minimal code change (the wrappers detect whether they are running inside a workflow and fall back to direct execution otherwise).
 - **LangGraph** provides lighter-weight, framework-native durability through **checkpointers** that save graph state at each super-step to persistent storage, with selectable durability modes (checkpoint at exit, asynchronously, or synchronously before each step). Its guidance mirrors the determinism rule: keep the workflow deterministic and idempotent and wrap side effects in tasks.
 - **DBOS and Restate** integrate at the library level with agent frameworks, wrapping agent runs and sub-agent calls as durable workflows and child workflows.
+- **Temporal + Amazon Bedrock AgentCore Runtime** entered prerelease on September 21, 2026: a Temporal workflow runs the durable agent loop, model and tool calls are activities with retry policies, Strands Agents supplies the programming model, and AgentCore Runtime is the compute behind Temporal Serverless Workers.
 
 The honest tension to teach: **framework-native checkpointing recovers *state*; a full durable-execution engine additionally gives exactly-once side effects, durable timers, signals, and replay semantics across deploys.** The gap matters most when tool calls have irreversible external effects. For agents that are mostly LLM reasoning with recoverable, idempotent tools, framework checkpointing plus idempotency keys on the few non-idempotent tools is often enough.
 
@@ -73,9 +75,25 @@ The canonical pattern that ties it together: when a proposed action is risky, th
 
 ---
 
+## Managed Agent Runtimes: Renting the Durable Loop
+
+As of September 2026 both Anthropic and OpenAI sell the agent harness itself as a managed runtime with durable sessions built in (OpenAI's Agents API joined Claude Managed Agents on September 10), and AWS offers OpenAI's inside its own cloud. That adds a third option next to "framework checkpointing" and "run a durable-execution engine": rent the loop.
+
+| Platform | Status (October 1, 2026) | Durability and control features | Constraints to check |
+|----------|--------------------------|---------------------------------|----------------------|
+| **Claude Managed Agents** | Shipping | Durable sessions; hard session budgets that pause with `budget_reached` (August 7); cron-scheduled deployments (since June 9); agents-as-code via `ant apply` with a committed `claude-lock.json` (ant CLI 1.30.0, September 3); server-evaluated auto permission policy and live terminal attach (September 10) | Bills tokens plus $0.08 per session-hour of running time (idle time free); no Batch discount |
+| **OpenAI Agents API** | Public beta (September 10) | Managed Codex harness: durable sessions, context compaction, recovery, subagent delegation, MCP servers over HTTP, mid-run steering; OpenAI-hosted or self-hosted sandboxes; hosted-browser computer use (September 29) | US data residency only and no Zero Data Retention at launch; billed at model, tool, and container rates (sandboxes $0.03 to $0.48 per 20-minute session) |
+| **Amazon Bedrock Managed Agents** (powered by OpenAI) | Preview (September 29) | A customized OpenAI Agents API running inside AWS: per-agent IAM role, CloudTrail logging, durable sessions, human approval before consequential actions | us-east-1, us-east-2, and us-west-2 only; no extra charge during preview |
+| **AWS AgentCore Runtime V2** | Announced September 18 | Restores each instance from a snapshot of an initialized agent; P75 cold start about 2 s versus roughly 5.4 s to 30 s on the original runtime (AWS-reported) | Opt in with `platformVersion` V2; higher rate on far fewer GB-hours |
+| **Microsoft Foundry Agent Service** | Routines GA (September 24) | Recurring, one-shot timer, and event-based triggers for published agents | Network egress controls still in preview |
+
+What renting buys: crash recovery, compaction, triggers, budgets, and approvals without operating a cluster. What it does not buy: **exactly-once semantics for your own side-effecting tools**. A managed runtime can resume a session, but it cannot know whether your payment API committed before the crash, so non-idempotent tools still need idempotency keys and, for multi-step side effects, your own durable workflow behind the tool. The other costs are lock-in at the harness layer (agents-as-code files, session semantics, and event formats are vendor-specific) and residency or retention gaps, which can rule a platform out for regulated data before any technical comparison starts. Bedrock Managed Agents running OpenAI's harness inside AWS is the clearest sign that the harness, not the model endpoint, is becoming the integration unit.
+
+---
+
 ## When You Need It
 
-Durable execution is the emerging answer to *production* agent reliability, and the 2026 traction is real: Temporal raised a large Series D at a reported multi-billion-dollar valuation, and major AI products build agents on it. A widely cited vendor case study describes a deep-research agent that **migrated from a framework prototype to a durable-execution engine** after hitting race conditions, fragile custom retry logic, and stale-state bugs that became costly to support (a vendor-published account, so read the direction as real and the framing as theirs).
+Durable execution is the emerging answer to *production* agent reliability, and the 2026 traction is real: Temporal followed its earlier Series D with a $550M Series E at a $12.55B valuation (September 14, 2026), reporting 1.9 trillion billable actions in August (up more than 350% year over year), more than 4,300 paying customers, and OpenAI's Temporal usage up 60x in under a year (company-reported figures). A widely cited vendor case study describes a deep-research agent that **migrated from a framework prototype to a durable-execution engine** after hitting race conditions, fragile custom retry logic, and stale-state bugs that became costly to support (a vendor-published account, so read the direction as real and the framing as theirs).
 
 But it is a deliberate complexity trade. The constraints (determinism, versioning hazards, a new testing and monitoring model) are real, and for agents that are mostly read-only, short-lived, or single-shot, **framework-native checkpointing or a queue plus idempotency keys is often enough** and far cheaper to operate. DBOS and Restate lower the entry cost materially versus a full cluster, so if the objection is operational overhead, the library-and-Postgres approach may get most of the value.
 
@@ -88,7 +106,7 @@ Walk these in order:
 1. **Does any tool call have an irreversible external side effect** (payment, email, deploy, ticket, cross-system write)? No: framework checkpointing or a retry/queue likely suffices. Yes: continue.
 2. **Can a single run outlast your process or deploy cycle, or must it pause for human approval across restarts?** No: in-memory plus a checkpoint on completion is probably fine. Yes: you need durable timers and durable pauses.
 3. **Would re-running the whole agent on a crash be unacceptable** in cost, duplicate effects, or lost multi-hour progress? Yes: you need replay and exactly-once, so durable execution is justified.
-4. **Pick the weight class:** DBOS if side effects are mostly writes to your own Postgres and you want one deploy; Restate for low-ops, HTTP-native, stateful sessions; Inngest for event-driven, TS-first, AI-native rate-limit control; Step Functions if you are all-in on AWS and fine with a declarative state machine; Temporal for large scale, complex long-running processes, and the deepest agent-framework integrations; or stay with framework-native durability (LangGraph checkpointers) plus idempotency keys when the agent is mostly reasoning with recoverable tools.
+4. **Pick the weight class:** DBOS if side effects are mostly writes to your own Postgres and you want one deploy; Restate for low-ops, HTTP-native, stateful sessions; Inngest for event-driven, TS-first, AI-native rate-limit control; Step Functions if you are all-in on AWS and fine with a declarative state machine; Temporal for large scale, complex long-running processes, and the deepest agent-framework integrations; a managed agent runtime (Claude Managed Agents, OpenAI Agents API, Bedrock Managed Agents) when its residency, retention, and pricing fit and you would rather rent the loop than run it; or stay with framework-native durability (LangGraph checkpointers) plus idempotency keys when the agent is mostly reasoning with recoverable tools.
 
 It is overkill for simple CRUD, sub-millisecond hot paths, pure high-throughput streaming, or a tiny team whose needs a queue with a dead-letter handler already covers.
 
@@ -106,13 +124,20 @@ Because an agent crash creates an ambiguity a retry cannot resolve safely. If th
 **Strong answer:**
 It is overkill when the agent has no irreversible side effects, runs short enough to fit inside a process and deploy cycle, and would be fine to simply re-run on failure, for example a read-only research or summarization agent with idempotent tools. There I would use framework-native durability like a LangGraph checkpointer to recover state, plus idempotency keys on the few non-idempotent calls, and a retry queue with a dead-letter handler. The determinism constraints and versioning hazards of a full engine like Temporal are a real cost, so I would only take them on once the agent has irreversible effects, must pause for human approval across restarts, or is long enough that re-running on a crash is unacceptable. If operational overhead is the blocker but I still need durability, a library approach like DBOS that uses my existing Postgres gets much of the value without running a cluster.
 
+### Q: Would you build your agent on Temporal or rent a managed agent runtime like the OpenAI Agents API or Claude Managed Agents?
+
+**Strong answer:**
+I separate the agent loop from the side effects. Renting the loop is attractive: durable sessions, compaction, triggers, session spend caps, and policy-evaluated approvals arrive without a cluster, and the vendor tunes the harness to its models. But I check three things first. Compliance: the OpenAI Agents API launched with US-only data residency and no Zero Data Retention, which can end the conversation for regulated data. Semantics: a managed runtime resumes the session, but it cannot give exactly-once guarantees for my payment or ticketing tools, so those still need idempotency keys or a durable workflow of their own behind the tool interface. Lock-in: agents-as-code files, event formats, and session semantics are vendor-specific, so moving later is a rewrite, and model choice gets coupled to harness choice. My usual answer is a hybrid: rent the loop for agents that are mostly reasoning plus idempotent tools, and keep irreversible multi-step operations (refunds, provisioning) in Temporal or DBOS workflows exposed to the agent as single tools, so the part that must be exactly-once lives where I control it.
+
 ---
 
 ## References
 
 - Resonate, ["From where do deterministic constraints come?"](https://journal.resonatehq.io/p/from-where-do-deterministic-constraints)
 - Restate, ["What is durable execution?"](https://www.restate.dev/what-is-durable-execution)
-- Temporal, [OpenAI Agents SDK integration](https://temporal.io/blog/announcing-openai-agents-sdk-integration) and [Series D announcement](https://temporal.io/news/temporal-raises-300M-to-make-agentic-ai-real-for-companies)
+- Temporal, [OpenAI Agents SDK integration](https://temporal.io/blog/announcing-openai-agents-sdk-integration), [Series D announcement](https://temporal.io/news/temporal-raises-300M-to-make-agentic-ai-real-for-companies), and [Series E announcement](https://temporal.io/news/temporal-raises-550m-at-a-12-55b-valuation)
+- OpenAI, [Agents API overview](https://developers.openai.com/api/docs/guides/agents-api/overview)
+- Anthropic, [Claude Platform release notes (Managed Agents)](https://platform.claude.com/docs/en/release-notes/overview)
 - Temporal, [prototype to production-ready agentic AI: a Grid Dynamics case study](https://temporal.io/blog/prototype-to-prod-ready-agentic-ai-grid-dynamics)
 - Google ADK, [Temporal integration](https://adk.dev/integrations/temporal/)
 - LangChain, [durable execution in LangGraph](https://docs.langchain.com/oss/python/langgraph/durable-execution)

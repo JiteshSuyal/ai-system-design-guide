@@ -1,6 +1,6 @@
 # Hybrid Search
 
-Hybrid search combines dense (semantic) and sparse (keyword) retrieval to get the benefits of both. It is the baseline for production RAG: Elasticsearch's `rrf` retriever, OpenSearch hybrid search, Weaviate, Qdrant, and Azure AI Search all ship native hybrid pipelines out of the box.
+Hybrid search combines dense (semantic) and sparse (keyword) retrieval to get the benefits of both. It is the baseline for production RAG: Elasticsearch's `rrf` and `linear` retrievers, OpenSearch hybrid search, Weaviate, Qdrant, Milvus, and Azure AI Search all ship native hybrid pipelines out of the box. Pinecone added BM25 full-text search (GA September 9, 2026), but each request ranks by one scoring type, so you fuse lexical and vector results client-side.
 
 ## Table of Contents
 
@@ -147,18 +147,29 @@ def sparse_search(query: str, top_k: int = 10) -> list[Result]:
 Some vector databases support hybrid natively:
 
 ```python
-# Weaviate
-results = client.query.get("Document", ["text"]).with_hybrid(
+# Weaviate (Python client v4)
+docs = client.collections.use("Document")
+results = docs.query.hybrid(
     query="Configure NVIDIA_VISIBLE_DEVICES",
-    alpha=0.5  # 0 = sparse only, 1 = dense only
-).do()
-
-# Qdrant (with sparse vectors)
-results = client.search(
-    collection_name="docs",
-    query_vector=NamedVector(name="dense", vector=dense_embedding),
-    query_sparse_vector=NamedSparseVector(name="sparse", vector=sparse_vector),
+    alpha=0.5,  # 0 = sparse only, 1 = dense only
 )
+
+# Qdrant (Query API: prefetch both arms, fuse server-side)
+from qdrant_client import models
+
+results = client.query_points(
+    collection_name="docs",
+    prefetch=[
+        models.Prefetch(query=dense_embedding, using="dense", limit=40),
+        models.Prefetch(
+            query=models.SparseVector(indices=sparse_indices, values=sparse_values),
+            using="sparse",
+            limit=40,
+        ),
+    ],
+    query=models.FusionQuery(fusion=models.Fusion.RRF),
+    limit=10,
+).points
 ```
 
 **Pros:** Single system, simpler ops, lower latency
@@ -204,7 +215,7 @@ def reciprocal_rank_fusion(
 
 **Properties:**
 - Position-based, ignores raw scores
-- Robust to score scale differences -- prevents a single engine from "dominating" just because it has high numerical scores
+- Robust to score scale differences: prevents a single engine from "dominating" just because it has high numerical scores
 - k parameter controls rank sensitivity (higher k = less sensitive to position)
 - Simple to implement, no tuning beyond k
 
@@ -287,9 +298,12 @@ def z_score_normalize(results: list[Result]) -> list[Result]:
 | Method | Uses Scores | Query Adaptive | Complexity |
 |--------|-------------|----------------|------------|
 | RRF | No (ranks only) | No | Low |
+| Weighted RRF | No (ranks, per-arm weights) | No | Low |
 | Weighted | Yes | No | Low |
 | Relative Score | Yes | Partially | Medium |
 | Learned | Yes | Yes | High |
+
+**Where the engines stand:** Elasticsearch fuses with the `rrf` retriever or the score-based `linear` retriever. Weaviate defaults to relative-score fusion. Qdrant offers RRF and distribution-based score fusion in the Query API. Milvus 3.0.1 added weighted RRF, which keeps RRF's scale-independence while letting you favor one arm.
 
 ---
 
@@ -304,6 +318,7 @@ Production stacks have moved beyond BM25 (simple word frequency) to **Learned Sp
 ### SPLADE Implementation
 
 ```python
+import torch
 from transformers import AutoModelForMaskedLM, AutoTokenizer
 
 class SpladeEncoder:
@@ -334,6 +349,8 @@ class SpladeEncoder:
 
 **When to use SPLADE over BM25 + Dense Hybrid:** SPLADE produces a sparse vector that can be stored in modern vector databases (like Milvus or Qdrant) alongside the dense vector, enabling hybrid search in a single pass without a separate Elasticsearch or BM25 index. Stick to BM25 if your dataset has extremely rare, non-linguistic tokens (like unique serial numbers) that a neural model might not have seen during training.
 
+**Sparse indexes caught up.** Learned sparse vectors have far more non-zero terms per document than BM25, which used to make them slow on inverted indexes built for keyword search. Milvus 3.0 rebuilt its sparse index around SINDI, Block-Max WAND and Block-Max MaxScore; Milvus reports the compressed BM25 index at roughly a third of its 2.6 size and SINDI at up to about 10x the QPS of MaxScore on learned sparse vectors (vendor benchmarks).
+
 ---
 
 ## Implementation Patterns
@@ -341,19 +358,20 @@ class SpladeEncoder:
 ### Pattern 1: Elasticsearch + Vector DB
 
 ```python
+import asyncio
+
 class HybridSearcher:
     def __init__(self, es_client, vector_db, embedding_model):
         self.es = es_client
         self.vector_db = vector_db
         self.embedding_model = embedding_model
 
-    def search(self, query: str, top_k: int = 10, alpha: float = 0.5) -> list[Result]:
+    async def search(self, query: str, top_k: int = 10) -> list[Result]:
         # Parallel retrieval
-        dense_future = self.dense_search(query, top_k * 3)
-        sparse_future = self.sparse_search(query, top_k * 3)
-
-        dense_results = dense_future.result()
-        sparse_results = sparse_future.result()
+        dense_results, sparse_results = await asyncio.gather(
+            self.dense_search(query, top_k * 3),
+            self.sparse_search(query, top_k * 3),
+        )
 
         # Fusion
         combined = reciprocal_rank_fusion([
@@ -365,15 +383,14 @@ class HybridSearcher:
 
     async def dense_search(self, query: str, top_k: int) -> list[Result]:
         embedding = self.embedding_model.encode(query)
-        return self.vector_db.search(embedding, top_k=top_k)
+        return await self.vector_db.search(embedding, top_k=top_k)
 
     async def sparse_search(self, query: str, top_k: int) -> list[Result]:
-        response = self.es.search(
+        # es_client is an AsyncElasticsearch instance
+        response = await self.es.search(
             index="documents",
-            body={
-                "query": {"match": {"content": query}},
-                "size": top_k
-            }
+            query={"match": {"content": query}},
+            size=top_k,
         )
         return [
             Result(id=hit["_id"], score=hit["_score"])
@@ -385,23 +402,23 @@ class HybridSearcher:
 
 ```python
 import weaviate
+from weaviate.classes.query import HybridFusion
 
 def hybrid_search_weaviate(
-    client: weaviate.Client,
+    client: weaviate.WeaviateClient,
     query: str,
     alpha: float = 0.5,
     top_k: int = 10
 ) -> list[dict]:
-    result = client.query.get(
-        "Document",
-        ["text", "title", "source"]
-    ).with_hybrid(
+    docs = client.collections.use("Document")
+    response = docs.query.hybrid(
         query=query,
         alpha=alpha,  # 0 = BM25 only, 1 = vector only
-        fusion_type=weaviate.HybridFusion.RELATIVE_SCORE
-    ).with_limit(top_k).do()
+        fusion_type=HybridFusion.RELATIVE_SCORE,
+        limit=top_k,
+    )
 
-    return result["data"]["Get"]["Document"]
+    return [obj.properties for obj in response.objects]
 ```
 
 ---
@@ -464,6 +481,12 @@ def predict_alpha(query: str) -> float:
     return 0.5  # Default balanced
 ```
 
+### Diversity and Business Rules
+
+Fusion optimizes relevance per document, so near-duplicate chunks from the same source can fill the top-k. Two controls that used to live in application code are now generally available engine features in Weaviate 1.39 (August 2026):
+- **MMR (maximal marginal relevance)** for hybrid and vector search, with a balance parameter between 0.0 and 1.0 that trades relevance against diversity (Python client 4.23.0+ for hybrid).
+- **Boost API**: query-time rescoring that promotes or demotes results by filter match, property value, time decay or numeric decay, without filtering anything out. Use it for freshness and "prefer official docs" rules instead of hard filters that can empty the result set.
+
 ### Retrieval Depth
 
 How many results to fetch before fusion:
@@ -501,6 +524,10 @@ Total:                   60-100ms
 - Pre-compute embeddings for common queries
 - Use approximate search for both
 - Cache fusion results for repeated queries
+
+### Multi-Tenant Keyword Scoring
+
+BM25 depends on corpus statistics (IDF). In a shared multi-tenant collection, one large tenant's vocabulary shifts every other tenant's keyword scores, so the same query and documents rank differently depending on who else is in the index, and term statistics leak across tenants. Qdrant 1.19 added per-tenant IDF for sparse and BM25 search; elsewhere, give large tenants their own index or accept the drift and evaluate per tenant.
 
 ### Caching Strategy
 
@@ -567,7 +594,7 @@ The decision is empirical. I would A/B test hybrid vs dense on my actual query d
 ### Q: Why is Reciprocal Rank Fusion (RRF) safer than "Simple Score Addition"?
 
 **Strong answer:**
-Simple score addition is dangerous because vector scores (e.g., Cosine Similarity: 0.0 to 1.0) and keyword scores (e.g., BM25: 0 to infinity) use completely different scales. An extremely high BM25 score for a lucky keyword match could "drown out" 10 highly relevant semantic matches. RRF ignores the absolute scores and only cares about the relative order (rank). This makes it mathematically robust to outliers and "score-drift" in different retrieval engines.
+Simple score addition is dangerous because vector and keyword scores use completely different scales. Cosine similarity is bounded to -1 to 1, and many text embedders squeeze it into a narrow positive band; BM25 is unbounded and shifts with corpus statistics and query length. An extremely high BM25 score for a lucky keyword match could "drown out" 10 highly relevant semantic matches. RRF ignores the absolute scores and only cares about the relative order (rank). That makes it insensitive to outliers and to score drift between retrieval engines.
 
 ### Q: When would you choose SPLADE over the standard BM25 + Dense Hybrid approach?
 
@@ -604,6 +631,9 @@ The alpha parameter controls the balance (typically alpha for dense weight):
 - Formal et al. "SPLADE: Sparse Lexical and Expansion Model for First Stage Ranking" (2021/2025)
 - Weaviate Hybrid Search: https://weaviate.io/developers/weaviate/search/hybrid
 - Qdrant Hybrid Search: https://qdrant.tech/documentation/concepts/hybrid-queries/
+- [Elasticsearch release notes (9.5)](https://www.elastic.co/docs/release-notes/elasticsearch)
+- [Pinecone full-text search GA (Sep 2026)](https://www.pinecone.io/blog/full-text-search-generally-available/)
+- [Milvus 3.0.0 release notes (July 2026)](https://github.com/milvus-io/milvus/releases/tag/v3.0.0)
 
 ---
 

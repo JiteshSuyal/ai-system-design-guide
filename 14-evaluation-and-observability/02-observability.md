@@ -6,8 +6,9 @@ Observability for LLM systems requires adapting the three pillars of logs, metri
 
 - [Why LLM Observability is Different](#why-llm-observability-is-different)
 - [The Three Pillars](#the-three-pillars)
+  - [Tracing LLM Pipelines](#traces)
+  - [When Instrumentation Goes Silent](#when-instrumentation-goes-silent)
 - [Key Metrics](#key-metrics)
-- [Tracing LLM Pipelines](#tracing-llm-pipelines)
 - [Quality Monitoring](#quality-monitoring)
 - [Cost Tracking](#cost-tracking)
 - [Alerting Strategy](#alerting-strategy)
@@ -81,9 +82,10 @@ class LLMLogger:
 
 **What to log:**
 - Request ID for correlation
-- Model and parameters
-- Token counts
+- Model and parameters, including effort level, and the model ID the response says actually served the request (defaults and routing change under you)
+- Token counts split into uncached input, cache reads, cache writes, output, and reasoning tokens (reasoning bills as output but is often invisible in the response text)
 - Latency (TTFT and total)
+- SDK and prompt versions, so a regression can be tied to a change
 - Content (hashed if privacy-sensitive)
 
 ### Metrics
@@ -116,7 +118,7 @@ llm_ttft_seconds = Histogram(
 tokens_used_total = Counter(
     "tokens_used_total",
     "Total tokens consumed",
-    ["model", "direction"]  # direction: input/output
+    ["model", "direction"]  # direction: uncached_input, cache_read, cache_write, output
 )
 
 # Cost metrics
@@ -130,7 +132,7 @@ llm_cost_dollars = Counter(
 quality_score = Gauge(
     "llm_quality_score",
     "Sampled quality score",
-    ["model", "task_type"]
+    ["model", "criterion"]
 )
 ```
 
@@ -172,6 +174,17 @@ async def rag_query(query: str) -> str:
         return response
 ```
 
+For attribute names, follow the OpenTelemetry GenAI semantic conventions (`gen_ai.*`) rather than inventing your own; LLM-specific backends key their views on them, and Langfuse's v4 SDK exports only Langfuse, `gen_ai.*`, and known LLM-instrumentation spans by default.
+
+### When Instrumentation Goes Silent
+
+The most dangerous observability failure is a quiet dashboard that looks healthy. In August 2026 both major Python provider SDKs changed the HTTP layer that tracing and test tooling hook into: OpenAI Python SDK 3.0.0 (August 12) made `httpx2` its default client and stopped installing `httpx`, and Anthropic Python SDK 1.0.0 (August 20) moved to `httpx2` as well. Anthropic's migration guide warns that OpenTelemetry's HTTPX instrumentor, Sentry's httpx integration, `respx`, `pytest-httpx`, and `vcrpy` can silently miss SDK requests unless `httpx2.alias_httpx()` runs before anything imports `httpx`. The result is missing spans in production and unmocked live calls in tests, with no error anywhere.
+
+Two controls catch this class of failure:
+
+- **A telemetry canary in CI.** One test makes a real (or recorded) model call through the production client and asserts that the expected span, token counts, and cost metric were emitted. Run it on every dependency bump.
+- **Daily reconciliation.** Compare tokens and dollars in your telemetry against the provider's usage or billing export. A gap of more than a few percent means something stopped reporting.
+
 ---
 
 ## Key Metrics
@@ -205,6 +218,8 @@ async def rag_query(query: str) -> str:
 | Cost per request | Average cost | Per model |
 | Daily cost | Total daily spend | Overall + per model |
 | Cost per user action | Cost to complete user goal | Per task type |
+| Cost per resolved task | Spend divided by tasks that actually succeeded | Per agent and model |
+| Cache hit rate | Cached input tokens / total input tokens | Per model and prompt template |
 | Token efficiency | Value delivered per token | Per use case |
 
 ---
@@ -215,7 +230,8 @@ async def rag_query(query: str) -> str:
 
 ```python
 class QualitySampler:
-    def __init__(self, sample_rate: float = 0.05):
+    def __init__(self, model: str, sample_rate: float = 0.05):
+        self.model = model
         self.sample_rate = sample_rate
         self.judge = LLMJudge()
     
@@ -296,38 +312,63 @@ class QualityDriftDetector:
 ### Real-Time Cost Calculation
 
 ```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Rate:
+    """USD per 1M tokens."""
+    input: float        # uncached input
+    output: float       # output, including reasoning tokens
+    cache_read: float   # input served from the prompt cache
+    cache_write: float  # input written to the cache (Anthropic 5-minute tier; OpenAI bills 1.25x input)
+
 class CostTracker:
-    # Pricing per 1M tokens (verify current rates)
+    # Standard-tier list prices, October 2026. Load these from config in production:
+    # promotions, long-context tiers, speed tiers, and residency premiums change monthly.
     PRICING = {
-        "gpt-4o": {"input": 2.50, "output": 10.00},
-        "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-        "claude-3.5-sonnet": {"input": 3.00, "output": 15.00},
-        "claude-3.5-haiku": {"input": 0.25, "output": 1.25},
+        "claude-opus-5-5":   Rate(input=4.00, output=20.00, cache_read=0.20, cache_write=5.00),
+        "claude-sonnet-5-5": Rate(input=2.00, output=10.00, cache_read=0.20, cache_write=2.50),
+        "gpt-6-sol":         Rate(input=2.00, output=10.00, cache_read=0.20, cache_write=2.50),
+        "gpt-6-luna":        Rate(input=0.10, output=0.50,  cache_read=0.01, cache_write=0.125),
     }
-    
-    def track(
-        self,
-        model: str,
-        input_tokens: int,
-        output_tokens: int,
-        request_id: str
-    ) -> float:
-        pricing = self.PRICING.get(model, {"input": 0, "output": 0})
-        
-        input_cost = (input_tokens / 1_000_000) * pricing["input"]
-        output_cost = (output_tokens / 1_000_000) * pricing["output"]
-        total_cost = input_cost + output_cost
-        
+
+    BUCKETS = ("uncached_input", "cache_read", "cache_write", "output")
+
+    def track(self, model: str, usage: dict, request_id: str) -> float:
+        # `usage` must already be split into the four disjoint BUCKETS. Providers
+        # disagree on whether cached tokens are counted inside the input total,
+        # so normalize per provider upstream or you will double-count.
+        rate = self.PRICING.get(model)
+        if rate is None:
+            # Never price an unknown model at $0: that hides the most expensive mistakes.
+            raise KeyError(f"No price configured for {model!r}")
+
+        total_cost = (
+            usage["uncached_input"] * rate.input
+            + usage["cache_read"] * rate.cache_read
+            + usage["cache_write"] * rate.cache_write
+            + usage["output"] * rate.output
+        ) / 1_000_000
+
         # Record metrics
         llm_cost_dollars.labels(model=model).inc(total_cost)
-        tokens_used_total.labels(model=model, direction="input").inc(input_tokens)
-        tokens_used_total.labels(model=model, direction="output").inc(output_tokens)
-        
+        for bucket in self.BUCKETS:
+            tokens_used_total.labels(model=model, direction=bucket).inc(usage[bucket])
+
         # Log for analysis
-        self.log_cost(request_id, model, input_tokens, output_tokens, total_cost)
-        
+        self.log_cost(request_id, model, usage, total_cost)
+
         return total_cost
 ```
+
+Four billing rules break naive per-token math:
+
+- **Cache reads dominate agent bills.** Anthropic's aggregate Claude Code usage data (published September 24, 2026, vendor-reported) puts the input-to-output token ratio at 324:1, up from 189:1 in March. At that ratio the cached-input price and your cache hit rate move cost far more than the output price. Cache-read discounts also vary by model: most Claude models bill reads at 0.1x input, Opus 5.5 at 0.05x, and Fable 5.1 at 0.025x.
+- **Long-context tiers reprice the whole request.** OpenAI bills the entire request at long-context rates once input passes 272K tokens (GPT-6 Sol goes from $2/$10 to $4/$15), and xAI bills every token at 2x on Grok 4.7 prompts of 200K tokens or more. Anthropic prices its 4.6-and-later models flat to 1M.
+- **Speed and residency tiers multiply the rate.** OpenAI's Fast tier is 2x (Ultrafast is 6x on GPT-6 Astra), and data-residency options run about 10% above list (Anthropic's `inference_geo: "us"` is 1.1x).
+- **Promotions expire.** Gemini 3.8 Flash's introductory $0.75/$3.75 runs through December 31, 2026 and becomes $1.50/$7.50 on January 1, 2027. Budget on list prices.
+
+So tag every cost record with the tier, the region, and the cache buckets, and put cache hit rate on the same dashboard as spend.
 
 ### Cost Attribution
 
@@ -375,7 +416,7 @@ alerts:
     condition: error_rate > 0.05
     for: 5m
     severity: critical
-    runbook: "Check provider status, verify API keys, review recent changes"
+    runbook: "Check provider status, verify API keys, review recent changes, fail over to a different vendor"
     
   # Latency
   - name: high_latency_p95
@@ -390,6 +431,18 @@ alerts:
     for: 1h
     severity: warning
     runbook: "Check for traffic spike, review recent deployments, verify caching"
+
+  - name: cache_hit_rate_drop
+    condition: cache_hit_rate < baseline_cache_hit_rate - 0.15
+    for: 1h
+    severity: warning
+    runbook: "Diff the prompt prefix (tool order, timestamps, injected IDs), check for a model or SDK change"
+
+  - name: served_model_changed
+    condition: served_model != pinned_model
+    for: 5m
+    severity: warning
+    runbook: "Check provider changelog and gateway routing; re-run the regression suite before accepting"
     
   # Quality
   - name: quality_degradation
@@ -415,55 +468,61 @@ alerts:
 | Warning | < 4 hours | Quality degradation, cost spike |
 | Info | Next business day | Trend changes, capacity planning |
 
+Plan the critical tier around vendor-wide outages, not single-model failures. Between August 16 and September 29, 2026, Anthropic's status feed logged at least 12 major or critical incidents, and OpenAI's September 29 incident degraded the API, ChatGPT, and Codex together for about 5 hours 20 minutes. When an outage takes out a vendor's API and its coding agent at once, a fallback chain that stays inside one vendor does not help; route across vendors, and alert on the fallback rate so you know when you are running on the backup.
+
 ---
 
 ## Observability Tools
 
 ### LLM-Specific Tools
 
-| Tool | Focus | Best For |
-|------|-------|----------|
-| LangSmith | LangChain tracing | LangChain-based apps |
-| Langfuse | Open source tracing | Self-hosted, privacy |
-| Weights & Biases | Experiment tracking | ML teams |
-| Arize Phoenix | LLM monitoring | Production monitoring |
-| Helicone | API proxy logging | Simple integration |
+| Tool | Focus | Best For | Watch |
+|------|-------|----------|-------|
+| LangSmith | Tracing and evals; trace-to-fine-tune in public beta since September 24, 2026 | LangChain and LangGraph apps | SaaS traces with extended retention are kept at most 180 days from September 14, 2026 (self-hosted and BYOC unchanged) |
+| Langfuse | Open-source, OpenTelemetry-based tracing and evals | Self-hosted, privacy | Part of ClickHouse since January 2026; Python SDK v4 changed the API and filters exported spans to LLM scopes by default |
+| Weights & Biases | Experiment tracking; Weave for LLM tracing and evals | ML teams that also track training and fine-tuning runs | Part of CoreWeave since 2025 |
+| Arize Phoenix | LLM tracing and evals | Production monitoring | Elastic-2.0 license (source-available, not OSI open source); Dynatrace agreed in August 2026 to buy Arize for $915M and says Phoenix remains available |
+| Helicone | API proxy logging | Simple integration | Acquired by Mintlify (announced March 2026); confirm the roadmap before adopting |
 
-### Integration Example: Langfuse
+**Choose for exit, not just features.** This layer is consolidating fast, so vendor risk is a selection criterion. Emit OpenTelemetry with `gen_ai.*` attributes from your own code so you can switch backends, keep the traces you need for audit or compliance in storage you control (a SaaS tracing store with a 180-day cap is not an audit log), and export eval datasets and judge prompts in a format you own.
+
+### Integration Example: Langfuse (Python SDK v4)
+
+The Langfuse Python SDK has been OpenTelemetry-based since the v3 rewrite (June 2025) and was at 4.16.0 at the end of September 2026. The v2 pattern in older tutorials (`langfuse.trace()`, `trace.span()`, `trace.generation()`, `span.end()`) is obsolete; use the `@observe()` decorator and `start_as_current_observation()`:
 
 ```python
-from langfuse import Langfuse
+from langfuse import get_client, observe, propagate_attributes
 
-langfuse = Langfuse()
+langfuse = get_client()  # credentials from the LANGFUSE_* environment variables
 
-async def traced_rag_query(query: str) -> str:
-    # Start trace
-    trace = langfuse.trace(name="rag_query", input=query)
-    
-    # Embedding span
-    embed_span = trace.span(name="embed")
-    embedding = await embed(query)
-    embed_span.end()
-    
-    # Retrieval span
-    retrieve_span = trace.span(name="retrieve")
-    results = await vector_db.search(embedding)
-    retrieve_span.end(output={"count": len(results)})
-    
-    # Generation span
-    gen_span = trace.generation(
-        name="generate",
-        model="gpt-4o",
-        input={"query": query, "context": results}
-    )
-    response = await llm.generate(query, context=results)
-    gen_span.end(output=response)
-    
-    # End trace
-    trace.update(output=response)
-    
-    return response
+@observe(name="rag_query")  # root observation; captures input and return value
+async def traced_rag_query(query: str, user_id: str, session_id: str) -> str:
+    with propagate_attributes(user_id=user_id, session_id=session_id):
+        with langfuse.start_as_current_observation(as_type="span", name="retrieve") as span:
+            embedding = await embed(query)
+            results = await vector_db.search(embedding, top_k=10)
+            span.update(output={"count": len(results), "ids": [r.id for r in results]})
+
+        context = results[:5]
+        with langfuse.start_as_current_observation(
+            as_type="generation",
+            name="generate",
+            model="claude-sonnet-5-5",
+            input={"query": query, "context": [r.text for r in context]},
+        ) as gen:
+            response = await llm.generate(query, context=context)
+            gen.update(
+                output=response.text,
+                usage_details={  # Langfuse's own keys; flat buckets must not overlap
+                    "input": response.usage.input_tokens,
+                    "output": response.usage.output_tokens,
+                },
+            )
+
+    return response.text
 ```
+
+Two v4 behaviors to know. Decorated functions record their arguments and return values, so keep embeddings, raw documents, and sensitive fields out of observed signatures or mask them. And v4 exports only Langfuse, `gen_ai.*`, and known LLM-instrumentation spans by default, so database and HTTP spans from the same process will not appear unless you widen the filter.
 
 ---
 
@@ -483,6 +542,7 @@ async def traced_rag_query(query: str) -> str:
 
 **Quality metrics:** This is what makes LLM observability unique.
 - Sampled quality scores using LLM-as-judge (1-5% sample rate)
+- Binary checks (policy violations, missing citations) on all traffic with a distilled or decision-model judge, which is now cheap enough to run at 100%
 - For RAG: faithfulness and relevance scores
 - User feedback: thumbs up/down, explicit ratings
 - Task completion rate where measurable
@@ -519,13 +579,31 @@ The key insight is that a fast, available LLM system producing bad outputs is st
 
 I also maintain a golden test set of queries with expected behaviors that I run on every deployment to catch regressions before production."
 
+### Q: After a routine dependency upgrade, your LLM dashboards go quiet: fewer spans, lower token counts. Traffic and the provider bill are unchanged. What happened, and how do you stop it from happening again?
+
+**Strong answer:**
+
+"Unchanged bills with falling telemetry means the instrumentation broke, not the traffic. My first suspect is the HTTP transport. In August 2026 the OpenAI Python SDK 3.0 and Anthropic Python SDK 1.0 both moved to `httpx2`, and instrumentation that hooks `httpx` (the OpenTelemetry HTTPX instrumentor, Sentry's integration, and mocking libraries like `respx` and `vcrpy`) can silently stop seeing SDK calls unless `httpx2.alias_httpx()` runs before anything imports `httpx`. Other suspects with the same symptom: a tracing SDK major version that changed its API or its default span filter, or a sampling config that shipped with the upgrade.
+
+To confirm, I compare a day of provider usage exports against my token metrics, then make one call in staging and check whether its span appears.
+
+To prevent a repeat:
+1. **Telemetry canary in CI**: one test makes a model call through the production client and asserts the span, token counts, and cost metric were emitted. It runs on every dependency bump.
+2. **Daily reconciliation**: telemetry tokens and dollars versus the provider's billing export, alerting on a gap over a few percent.
+3. **Upgrade as a set**: provider SDKs, the HTTP client, and instrumentation packages are pinned together and bumped together.
+
+The general lesson is that observability needs its own tests. A dashboard with no errors is only good news if you have proven it would show them."
+
 ---
 
 ## References
 
 - OpenTelemetry: https://opentelemetry.io/
+- OpenTelemetry GenAI semantic conventions: https://opentelemetry.io/docs/specs/semconv/gen-ai/
 - Langfuse: https://langfuse.com/docs
+- Langfuse Python SDK v3 to v4 upgrade guide: https://langfuse.com/docs/observability/sdk/upgrade-path/python-v3-to-v4
 - LangSmith: https://docs.smith.langchain.com/
+- OpenAI Python SDK `httpx2` notes: https://github.com/openai/openai-python/blob/main/httpx2.md
 
 ---
 

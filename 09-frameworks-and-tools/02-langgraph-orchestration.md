@@ -1,14 +1,16 @@
 # LangGraph Orchestration
 
-LangGraph is the **de facto standard** for building stateful, multi-agent systems. It reached v1.0 in late 2025 and surpassed CrewAI in GitHub stars in early 2026 thanks to enterprise adoption of its graph-based runtime. Unlike simple chains, LangGraph allows for **Cycles**, **State Persistence**, and **Human-in-the-Loop** interventions.
+LangGraph is the **de facto standard** for building stateful, multi-agent systems. It reached v1.0 in October 2025 and is at 1.2.12 (Sep 21, 2026); LangGraph 0.4 stays in maintenance mode until December 2026. Unlike simple chains, LangGraph allows for **Cycles**, **State Persistence**, and **Human-in-the-Loop** interventions.
+
+Adoption depends on which number you read. On GitHub stars CrewAI still leads (about 59.3K versus 42.6K for `langchain-ai/langgraph` on Oct 1, 2026). On downloads LangGraph leads by an order of magnitude: about 43.7M PyPI downloads in the month to Oct 1 versus about 2.4M for `crewai`, plus about 13.9M npm downloads of `@langchain/langgraph` (Aug 31 to Sep 29). Stars measure attention; downloads measure dependency, inflated by CI and transitive installs. Quote the metric that matches the claim you are making.
 
 ## Table of Contents
 
-- [The Graph Philosophy](#philosophy)
-- [Cyclic vs. Acyclic Workflows](#cyclic)
-- [State Management in LangGraph](#state)
-- [Persistence and Checkpointing](#persistence)
-- [Multi-Agent Orchestration Patterns](#multi-agent)
+- [The Graph Philosophy](#the-graph-philosophy)
+- [Cyclic vs. Acyclic Workflows](#cyclic-vs-acyclic)
+- [State Management in LangGraph](#state-management)
+- [Persistence and Checkpointing](#persistence-and-checkpointing)
+- [Multi-Agent Orchestration Patterns](#multi-agent-patterns)
 - [Interview Questions](#interview-questions)
 - [References](#references)
 
@@ -49,9 +51,12 @@ class GraphState(TypedDict):
 ## Persistence and Checkpointing
 
 Current LangGraph uses **Thread-based Persistence**.
-- **The Concept**: Every session has a `thread_id`.
+- **The Concept**: Every session has a `thread_id`, and a checkpointer (Postgres, SQLite, Redis, or in-memory for tests) saves state after every super-step.
 - **The Win**: If a user comes back after 2 days, the agent remembers the exact point it was at in a multi-step workflow.
+- **Interrupts**: `interrupt()` pauses a node for human approval and resumes from the checkpoint, which is how durable human-in-the-loop works without a polling loop.
 - **Time-Travel**: Developers can "re-run" a specific thread from a previous state to debug a failure.
+
+The moat has narrowed. CrewAI added checkpointing in 1.14 (Apr 2026), Microsoft Agent Framework ships workflow checkpointing, and Google ADK 2.0 added graph workflows with pause and resume. LangGraph's remaining edge is maturity: branch-from-any-checkpoint debugging and the LangSmith trace integration.
 
 ---
 
@@ -63,26 +68,29 @@ Current LangGraph uses **Thread-based Persistence**.
 | **Peer-to-Peer**| Agents hand off tasks to each other directly. | Customer Support |
 | **Hierarchical**| Graphs within Graphs (Nested graphs). | Enterprise Engineering |
 
+Tool access in these patterns increasingly comes through MCP: since `langchain` 1.4.0 (Sep 3, 2026) the MCP adapter is part of the core `langchain` package, so a LangGraph node can mount MCP servers without a separate adapter dependency.
+
 ---
 
 ## Interview Questions
 
-### Q: Why use LangGraph instead of OpenAI's "Assistant API"?
+### Q: Why use LangGraph instead of a managed agent runtime such as the OpenAI Agents API or Claude Managed Agents?
 
 **Strong answer:**
-**Control and Portability**. The Assistant API is a black box: you cannot see the exact prompts or control the logic gates. LangGraph is a **White Box framework**. I can use any model (OpenAI, Claude, Llama 3.3), control exactly when a tool is called, and inject my own custom validation logic between steps. More importantly, LangGraph is **Open Source** and can run locally/on-prem, which is critical for many enterprise security requirements.
+**Control and Portability versus operational offload.** The question used to be framed against OpenAI's Assistants API, which shut down on August 26, 2026 and forced every Threads-based app to rebuild on Responses plus Conversations. That is the first point: vendor-managed state can disappear on the vendor's schedule. The managed runtimes that replaced it are much better (the OpenAI Agents API, public beta Sep 10, 2026, runs the Codex harness with durable sessions, compaction and recovery; Claude Managed Agents adds session budgets, a server-evaluated permission policy and `ant apply` agents-as-code), and they remove real work. But the loop runs on their side. LangGraph is a **White Box framework**: I can use any model (OpenAI, Claude, open-weight models), control exactly when a tool is called, inject validation between steps, and run it on-prem. For regulated workloads the deciding facts are concrete: the Agents API beta is US-residency only with no Zero Data Retention. My default is LangGraph (or a thin custom loop) for the core workflow, with managed runtimes for leaf agents where their compaction and sandboxing save more than the lock-in costs.
 
 ### Q: How do you handle "State Overload" in a graph with 20+ nodes?
 
 **Strong answer:**
-We use **State Narrowing**. Instead of passing the entire global state to every node, we define specialized sub-states for sub-graphs. We also use **Trim Runnables** to prune the message history before it hits the LLM, ensuring we don't waste tokens while keeping the "Truth" preserved in the persistence layer. 
+We use **State Narrowing**. Instead of passing the entire global state to every node, we define specialized sub-states for sub-graphs. We also use `trim_messages` (or a summarization node) to prune the message history before it hits the LLM, ensuring we don't waste tokens while keeping the "Truth" preserved in the persistence layer. Large tool results go to a store with a pointer left in state, the same tool-result offloading pattern Haystack 3.0 and Agno 3.0 now ship as built-ins.
 
 ---
 
 ## References
-- LangChain Team. "LangGraph: Multi-Agent Workflows at Scale" (2025)
-- Anthropic. "Building Resilient Agents with State Machines" (2025)
-- OpenSource AI. "Cycles and the Future of Agency" (2024 Tech Report)
+- LangChain. "LangGraph: Multi-Agent Workflows" (Jan 2024): https://www.langchain.com/blog/langgraph-multi-agent-workflows
+- LangGraph persistence docs: https://docs.langchain.com/oss/python/langgraph/persistence
+- LangChain release policy: https://docs.langchain.com/oss/python/release-policy
+- Anthropic. "Building Effective AI Agents" (Dec 2024; workflows vs agents, orchestrator-workers, evaluator-optimizer): https://www.anthropic.com/engineering/building-effective-agents
 
 ---
 
